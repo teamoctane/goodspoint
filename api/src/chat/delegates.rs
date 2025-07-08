@@ -10,7 +10,13 @@ use std::{
 use uuid::Uuid;
 
 use super::schemas::*;
-use crate::{DB, apex::utils::VerboseHTTPError, auth::schemas::UserOut};
+use crate::{
+    DB,
+    apex::utils::VerboseHTTPError,
+    auth::schemas::UserOut,
+    products::schemas::ProductCategory,
+    recommendations::{auto_log_signal, schemas::SignalType},
+};
 
 #[derive(serde::Deserialize)]
 struct FilebaseUploadResponse {
@@ -22,6 +28,7 @@ struct FilebaseUploadResponse {
     _size: String,
 }
 
+#[inline]
 pub fn is_allowed_attachment_type(content_type: &str) -> bool {
     matches!(
         content_type,
@@ -54,8 +61,7 @@ pub async fn upload_file_to_filebase(
 
     let form = Form::new().part("file", file_part);
 
-    let client = reqwest::Client::new();
-    let response = client
+    let response = reqwest::Client::new()
         .post(format!("{}/api/v0/add?pin=true", ipfs_endpoint))
         .header("Authorization", format!("Bearer {}", access_key))
         .multipart(form)
@@ -68,12 +74,10 @@ pub async fn upload_file_to_filebase(
             )
         })?;
 
-    let status = response.status();
-
-    if !status.is_success() {
+    if !response.status().is_success() {
         return Err(VerboseHTTPError::Standard(
             StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Filebase upload failed: {}", status),
+            format!("Filebase upload failed: {}", response.status()),
         ));
     }
 
@@ -84,19 +88,27 @@ pub async fn upload_file_to_filebase(
         )
     })?;
 
-    let file_url = format!("https://ipfs.filebase.io/ipfs/{}", upload_result.hash);
-    Ok(file_url)
+    Ok(format!(
+        "https://ipfs.filebase.io/ipfs/{}",
+        upload_result.hash
+    ))
 }
 
 pub async fn get_or_create_conversation(
     user_id: &str,
     other_user_id: &str,
 ) -> Result<String, VerboseHTTPError> {
-    let database = DB.get().unwrap();
+    let Some(database) = DB.get() else {
+        return Err(VerboseHTTPError::Standard(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Database unavailable".to_string(),
+        ));
+    };
+
     let conversations: Collection<Conversation> = database.collection("conversations");
 
     let mut participant_ids = vec![user_id.to_string(), other_user_id.to_string()];
-    participant_ids.sort();
+    participant_ids.sort_unstable();
 
     if let Ok(Some(conversation)) = conversations
         .find_one(doc! {
@@ -134,29 +146,31 @@ pub async fn verify_conversation_access(
     conversation_id: &str,
     user_id: &str,
 ) -> Result<(), VerboseHTTPError> {
-    let database = DB.get().unwrap();
+    let Some(database) = DB.get() else {
+        return Err(VerboseHTTPError::Standard(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Database unavailable".to_string(),
+        ));
+    };
+
     let conversations: Collection<Conversation> = database.collection("conversations");
 
-    if conversations
+    match conversations
         .find_one(doc! {
             "conversation_id": conversation_id,
             "participant_ids": user_id
         })
         .await
-        .map_err(|_| {
-            VerboseHTTPError::Standard(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Database error".to_string(),
-            )
-        })?
-        .is_some()
     {
-        Ok(())
-    } else {
-        Err(VerboseHTTPError::Standard(
+        Ok(Some(_)) => Ok(()),
+        Ok(None) => Err(VerboseHTTPError::Standard(
             StatusCode::FORBIDDEN,
             "Access denied to this conversation".to_string(),
-        ))
+        )),
+        Err(_) => Err(VerboseHTTPError::Standard(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Database error".to_string(),
+        )),
     }
 }
 
@@ -165,7 +179,8 @@ pub async fn send_text_message(
     other_user_id: &str,
     content: &str,
 ) -> Result<Message, VerboseHTTPError> {
-    if content.trim().is_empty() {
+    let content = content.trim();
+    if content.is_empty() {
         return Err(VerboseHTTPError::Standard(
             StatusCode::BAD_REQUEST,
             "Message content cannot be empty".to_string(),
@@ -180,7 +195,6 @@ pub async fn send_text_message(
     }
 
     let conversation_id = get_or_create_conversation(&user.uid, other_user_id).await?;
-
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
@@ -193,12 +207,20 @@ pub async fn send_text_message(
         message_type: MessageType::Text,
         content: Some(content.to_string()),
         attachment: None,
+        query_data: None,
+        quote_data: None,
         created_at: now,
         updated_at: now,
         edit_history: Vec::new(),
     };
 
-    let database = DB.get().unwrap();
+    let Some(database) = DB.get() else {
+        return Err(VerboseHTTPError::Standard(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Database unavailable".to_string(),
+        ));
+    };
+
     let messages: Collection<Message> = database.collection("messages");
     let conversations: Collection<Conversation> = database.collection("conversations");
 
@@ -226,6 +248,10 @@ pub async fn send_text_message(
                 "Failed to update conversation".to_string(),
             )
         })?;
+
+    log_chat_query_signal(user, content).await;
+
+    send_message_notification(&user.username, other_user_id, MessageType::Text).await;
 
     Ok(message)
 }
@@ -252,7 +278,6 @@ pub async fn send_attachment_message(
     }
 
     let file_url = upload_file_to_filebase(&file_name, file_data.clone(), &content_type).await?;
-
     let conversation_id = get_or_create_conversation(&user.uid, other_user_id).await?;
 
     let now = SystemTime::now()
@@ -276,12 +301,20 @@ pub async fn send_attachment_message(
         message_type: MessageType::Attachment,
         content: None,
         attachment: Some(attachment),
+        query_data: None,
+        quote_data: None,
         created_at: now,
         updated_at: now,
         edit_history: Vec::new(),
     };
 
-    let database = DB.get().unwrap();
+    let Some(database) = DB.get() else {
+        return Err(VerboseHTTPError::Standard(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Database unavailable".to_string(),
+        ));
+    };
+
     let messages: Collection<Message> = database.collection("messages");
     let conversations: Collection<Conversation> = database.collection("conversations");
 
@@ -310,6 +343,8 @@ pub async fn send_attachment_message(
             )
         })?;
 
+    send_message_notification(&user.username, other_user_id, MessageType::Attachment).await;
+
     Ok(message)
 }
 
@@ -322,7 +357,13 @@ pub async fn get_messages(
     let conversation_id = get_or_create_conversation(&user.uid, other_user_id).await?;
     verify_conversation_access(&conversation_id, &user.uid).await?;
 
-    let database = DB.get().unwrap();
+    let Some(database) = DB.get() else {
+        return Err(VerboseHTTPError::Standard(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Database unavailable".to_string(),
+        ));
+    };
+
     let messages: Collection<Message> = database.collection("messages");
 
     let mut filter = doc! { "conversation_id": &conversation_id };
@@ -360,7 +401,7 @@ pub async fn get_messages(
         )
     })?;
 
-    let response_messages: Vec<MessageResponse> = messages_vec
+    let response_messages = messages_vec
         .into_iter()
         .rev()
         .map(|msg| MessageResponse {
@@ -383,7 +424,8 @@ pub async fn edit_message(
     message_id: &str,
     new_content: &str,
 ) -> Result<Message, VerboseHTTPError> {
-    if new_content.trim().is_empty() {
+    let new_content = new_content.trim();
+    if new_content.is_empty() {
         return Err(VerboseHTTPError::Standard(
             StatusCode::BAD_REQUEST,
             "Message content cannot be empty".to_string(),
@@ -397,7 +439,13 @@ pub async fn edit_message(
         ));
     }
 
-    let database = DB.get().unwrap();
+    let Some(database) = DB.get() else {
+        return Err(VerboseHTTPError::Standard(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Database unavailable".to_string(),
+        ));
+    };
+
     let messages: Collection<Message> = database.collection("messages");
 
     let message = messages
@@ -435,6 +483,7 @@ pub async fn edit_message(
         content: message.content.clone(),
         attachment: message.attachment.clone(),
         edited_at: now,
+        username: Some(user.username.clone()),
     };
 
     let updated_message = messages
@@ -467,7 +516,13 @@ pub async fn edit_message(
 pub async fn get_user_conversations(
     user: &UserOut,
 ) -> Result<Vec<ConversationResponse>, VerboseHTTPError> {
-    let database = DB.get().unwrap();
+    let Some(database) = DB.get() else {
+        return Err(VerboseHTTPError::Standard(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Database unavailable".to_string(),
+        ));
+    };
+
     let conversations: Collection<Conversation> = database.collection("conversations");
 
     let cursor = conversations
@@ -487,7 +542,7 @@ pub async fn get_user_conversations(
         )
     })?;
 
-    let response_conversations: Vec<ConversationResponse> = conversations_vec
+    let response_conversations = conversations_vec
         .into_iter()
         .map(|conv| {
             let other_participant_id = conv
@@ -513,8 +568,15 @@ pub async fn get_message_edit_history(
     user: &UserOut,
     message_id: &str,
 ) -> Result<Vec<MessageEdit>, VerboseHTTPError> {
-    let database = DB.get().unwrap();
+    let Some(database) = DB.get() else {
+        return Err(VerboseHTTPError::Standard(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Database unavailable".to_string(),
+        ));
+    };
+
     let messages: Collection<Message> = database.collection("messages");
+    let users: Collection<crate::auth::schemas::UserOut> = database.collection("users");
 
     let message = messages
         .find_one(doc! { "message_id": message_id })
@@ -530,6 +592,285 @@ pub async fn get_message_edit_history(
         })?;
 
     verify_conversation_access(&message.conversation_id, &user.uid).await?;
+    
+    // Get the sender's username
+    let sender = users
+        .find_one(doc! { "uid": &message.sender_id })
+        .await
+        .map_err(|_| {
+            VerboseHTTPError::Standard(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Database error".to_string(),
+            )
+        })?;
+    
+    let sender_username = sender.map(|u| u.username);
+    
+    // Add username to all edit history entries
+    let mut edit_history = message.edit_history;
+    for edit in &mut edit_history {
+        edit.username = sender_username.clone();
+    }
 
-    Ok(message.edit_history)
+    Ok(edit_history)
+}
+
+pub async fn create_order_from_quote(
+    user: &UserOut,
+    message_id: String,
+) -> Result<crate::products::schemas::Order, VerboseHTTPError> {
+    let Some(database) = DB.get() else {
+        return Err(VerboseHTTPError::Standard(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Database unavailable".to_string(),
+        ));
+    };
+
+    let messages: Collection<Message> = database.collection("messages");
+
+    let message = messages
+        .find_one(doc! { "message_id": &message_id })
+        .await
+        .map_err(|_| {
+            VerboseHTTPError::Standard(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Database error".to_string(),
+            )
+        })?
+        .ok_or_else(|| {
+            VerboseHTTPError::Standard(StatusCode::NOT_FOUND, "Quote message not found".to_string())
+        })?;
+
+    verify_conversation_access(&message.conversation_id, &user.uid).await?;
+
+    let Some(quote_data) = message.quote_data else {
+        return Err(VerboseHTTPError::Standard(
+            StatusCode::BAD_REQUEST,
+            "Message is not a quote".to_string(),
+        ));
+    };
+
+    let products: Collection<crate::products::schemas::Product> = database.collection("products");
+    let product = products
+        .find_one(doc! { "product_id": &quote_data.product_id })
+        .await
+        .map_err(|_| {
+            VerboseHTTPError::Standard(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Database error".to_string(),
+            )
+        })?
+        .ok_or_else(|| {
+            VerboseHTTPError::Standard(StatusCode::NOT_FOUND, "Product not found".to_string())
+        })?;
+
+    let price = quote_data.custom_price.parse::<f64>().map_err(|_| {
+        VerboseHTTPError::Standard(StatusCode::BAD_REQUEST, "Invalid price format".to_string())
+    })?;
+
+    let order_response = crate::orders::delegates::create_order_internal(
+        quote_data.product_id,
+        product.user_id,
+        user.uid.clone(),
+        quote_data.quantity,
+        price,
+    )
+    .await?;
+
+    let order = crate::products::schemas::Order {
+        order_id: order_response.order_id,
+        product_id: order_response.product_id,
+        seller_id: order_response.seller_id,
+        buyer_id: order_response.buyer_id,
+        quantity: order_response.quantity,
+        price: order_response.price,
+        status: order_response.status,
+        created_at: order_response.created_at,
+        updated_at: order_response.updated_at,
+    };
+
+    Ok(order)
+}
+
+async fn send_message_notification(
+    sender_username: &str,
+    recipient_user_id: &str,
+    message_type: MessageType,
+) {
+    let Some(database) = DB.get() else {
+        return;
+    };
+
+    let users: Collection<crate::auth::schemas::UserOut> = database.collection("users");
+    let Ok(Some(recipient)) = users.find_one(doc! { "uid": recipient_user_id }).await else {
+        return;
+    };
+
+    if let Err(_) = recipient.initialize_encryption() {
+        return;
+    }
+
+    let notification_message = match message_type {
+        MessageType::Quote => format!("{} created a quote for you", sender_username),
+        MessageType::Query => format!("{} sent you a product inquiry", sender_username),
+        _ => format!("{} sent you a message", sender_username),
+    };
+
+    let full_message = format!(
+        "{} - Check your messages: https://goodspoint.tech/chat",
+        notification_message
+    );
+
+    let _ = crate::notifications::delegates::send_email_internal(
+        &recipient.email.to_string(),
+        Some(&recipient.username),
+        "New Message - GoodsPoint",
+        &full_message,
+    )
+    .await;
+
+    if recipient.whatsapp_verified {
+        if let Some(ref whatsapp) = recipient.whatsapp_number {
+            let _ = crate::notifications::delegates::send_whatsapp_internal(
+                &whatsapp.to_string(),
+                &full_message,
+            )
+            .await;
+        }
+    }
+}
+
+async fn log_chat_query_signal(user: &UserOut, content: &str) {
+    if is_product_query_message(content) {
+        let inferred_category = infer_category_from_query(content);
+        auto_log_signal(
+            &user.uid,
+            SignalType::Query,
+            inferred_category,
+            None,
+            Some(content.to_string()),
+        )
+        .await;
+
+
+    }
+}
+fn is_product_query_message(content: &str) -> bool {
+    let content_lower = content.to_lowercase();
+
+    let inquiry_keywords = [
+        "price",
+        "cost",
+        "how much",
+        "available",
+        "stock",
+        "buy",
+        "purchase",
+        "interested",
+        "inquiry",
+        "quote",
+        "details",
+        "specs",
+        "specification",
+        "size",
+        "color",
+        "delivery",
+        "shipping",
+        "warranty",
+        "condition",
+        "discount",
+        "offer",
+        "deal",
+        "negotiable",
+    ];
+
+    let question_patterns = [
+        "?", "what", "when", "where", "how", "why", "can you", "do you",
+    ];
+
+    let has_inquiry = inquiry_keywords
+        .iter()
+        .any(|&keyword| content_lower.contains(keyword));
+    let has_question = question_patterns
+        .iter()
+        .any(|&pattern| content_lower.contains(pattern));
+
+    has_inquiry || has_question
+}
+
+fn infer_category_from_query(query: &str) -> ProductCategory {
+    let query_lower = query.to_lowercase();
+
+    if query_lower.contains("phone")
+        || query_lower.contains("smartphone")
+        || query_lower.contains("mobile")
+    {
+        ProductCategory::Smartphones
+    } else if query_lower.contains("laptop")
+        || query_lower.contains("computer")
+        || query_lower.contains("pc")
+    {
+        ProductCategory::Computers
+    } else if query_lower.contains("shirt")
+        || query_lower.contains("clothing")
+        || query_lower.contains("dress")
+    {
+        ProductCategory::UnisexClothing
+    } else if query_lower.contains("shoe")
+        || query_lower.contains("sneaker")
+        || query_lower.contains("boot")
+    {
+        ProductCategory::Shoes
+    } else if query_lower.contains("kitchen")
+        || query_lower.contains("cooking")
+        || query_lower.contains("utensil")
+    {
+        ProductCategory::Kitchen
+    } else if query_lower.contains("game")
+        || query_lower.contains("gaming")
+        || query_lower.contains("console")
+    {
+        ProductCategory::Gaming
+    } else if query_lower.contains("car")
+        || query_lower.contains("auto")
+        || query_lower.contains("vehicle")
+    {
+        ProductCategory::CarParts
+    } else if query_lower.contains("beauty")
+        || query_lower.contains("makeup")
+        || query_lower.contains("cosmetic")
+    {
+        ProductCategory::Beauty
+    } else if query_lower.contains("book")
+        || query_lower.contains("reading")
+        || query_lower.contains("novel")
+    {
+        ProductCategory::Books
+    } else if query_lower.contains("toy") || query_lower.contains("plaything") {
+        ProductCategory::Toys
+    } else if query_lower.contains("fitness")
+        || query_lower.contains("exercise")
+        || query_lower.contains("workout")
+    {
+        ProductCategory::FitnessEquipment
+    } else if query_lower.contains("furniture")
+        || query_lower.contains("chair")
+        || query_lower.contains("table")
+    {
+        ProductCategory::Furniture
+    } else if query_lower.contains("jewelry")
+        || query_lower.contains("necklace")
+        || query_lower.contains("ring")
+    {
+        ProductCategory::Jewelry
+    } else if query_lower.contains("bag")
+        || query_lower.contains("purse")
+        || query_lower.contains("backpack")
+    {
+        ProductCategory::Bags
+    } else if query_lower.contains("tool") || query_lower.contains("hardware") {
+        ProductCategory::HomeTools
+    } else {
+        ProductCategory::UnisexClothing
+    }
 }

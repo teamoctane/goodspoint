@@ -28,9 +28,11 @@ pub(crate) async fn send_message_endpoint(
     let mut attachment_file: Option<(String, Bytes, String)> = None;
 
     while let Ok(Some(field)) = multipart.next_field().await {
-        let field_name = field.name().unwrap_or("").to_string();
+        let Some(field_name) = field.name() else {
+            continue;
+        };
 
-        match field_name.as_str() {
+        match field_name {
             "content" => {
                 if let Ok(bytes) = field.bytes().await {
                     text_content = Some(String::from_utf8_lossy(&bytes).to_string());
@@ -187,5 +189,15 @@ pub(crate) async fn get_message_history_endpoint(
         }))
         .into_response(),
         Err(err) => err.into_response(),
+    }
+}
+
+pub(crate) async fn create_order_from_quote_endpoint(
+    Extension(user): Extension<UserOut>,
+    Json(request): Json<crate::products::schemas::CreateOrderFromQuoteRequest>,
+) -> impl IntoResponse {
+    match super::delegates::create_order_from_quote(&user, request.message_id).await {
+        Ok(order) => Json(order).into_response(),
+        Err(error) => error.into_response(),
     }
 }

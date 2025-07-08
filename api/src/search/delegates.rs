@@ -35,79 +35,84 @@ pub async fn optimized_search_products(
 
     let mut enhanced_query = None;
     let mut ai_enhancement_triggered = false;
+    let mut inferred_category = None;
 
-    let final_query = if let Some(ref query) = request.query {
-        if query.len() > MAX_SEARCH_QUERY_LENGTH {
-            return Err(VerboseHTTPError::Standard(
-                StatusCode::BAD_REQUEST,
-                format!(
-                    "Query too long. Maximum {} characters allowed",
-                    MAX_SEARCH_QUERY_LENGTH
-                ),
-            ));
-        }
-
-        if query.trim().is_empty() {
-            None
-        } else if (query.len() > 10 || has_stopwords(query))
-            && !request.force_original.unwrap_or(false)
-        {
-            ai_enhancement_triggered = true;
-            match enhance_query_with_ai(query).await {
-                Ok(enhanced) => {
-                    enhanced_query = Some(enhanced.clone());
-                    Some(enhanced)
-                }
-                Err(_) => {
-                    ai_enhancement_triggered = false;
-                    enhanced_query = Some(query.clone());
-                    Some(query.clone())
-                }
+    let final_query = match request.query {
+        Some(ref query) => {
+            if query.len() > MAX_SEARCH_QUERY_LENGTH {
+                return Err(VerboseHTTPError::Standard(
+                    StatusCode::BAD_REQUEST,
+                    format!(
+                        "Query too long. Maximum {} characters allowed",
+                        MAX_SEARCH_QUERY_LENGTH
+                    ),
+                ));
             }
-        } else {
-            enhanced_query = Some(query.clone());
-            Some(query.clone())
+
+            if query.trim().is_empty() {
+                None
+            } else if (query.len() > 10 || has_stopwords(query))
+                && !request.force_original.unwrap_or(false)
+            {
+                ai_enhancement_triggered = true;
+                match enhance_query_with_ai(query).await {
+                    Ok((enhanced, category)) => {
+                        enhanced_query = Some(enhanced.clone());
+                        inferred_category = category;
+                        Some(enhanced)
+                    }
+                    Err(_) => {
+                        ai_enhancement_triggered = false;
+                        enhanced_query = Some(query.clone());
+                        Some(query.clone())
+                    }
+                }
+            } else {
+                enhanced_query = Some(query.clone());
+                Some(query.clone())
+            }
         }
-    } else {
-        None
+        None => None,
     };
 
-    let results = if let Some(query_text) = final_query {
-        match vector_search(
-            &Some(query_text.clone()),
-            &image_files,
-            &filters,
-            limit * 2,
-            0,
-        )
-        .await
-        {
-            Ok(vector_results) if !vector_results.is_empty() => {
-                match text_search(&query_text, &filters, limit, 0).await {
-                    Ok(text_results) => {
-                        hybrid_combine_results(vector_results, text_results, limit, 0)
-                    }
-                    Err(_) => vector_results.into_iter().take(limit as usize).collect(),
-                }
-            }
-            Ok(_) => text_search(&query_text, &filters, limit, 0)
-                .await
-                .unwrap_or_default(),
-            Err(_) => text_search(&query_text, &filters, limit, 0)
-                .await
-                .unwrap_or_default(),
-        }
-    } else if !image_files.is_empty() {
-        match vector_search(&None, &image_files, &filters, limit, 0).await {
-            Ok(results) => results,
-            Err(_) => browse_products(&filters, limit, 0)
-                .await
-                .unwrap_or_default(),
-        }
-    } else {
-        browse_products(&filters, limit, 0)
+    let results = match final_query {
+        Some(ref query_text) => {
+            match vector_search(
+                &Some(query_text.clone()),
+                &image_files,
+                &filters,
+                limit * 2,
+                0,
+            )
             .await
-            .unwrap_or_default()
+            {
+                Ok(vector_results) if !vector_results.is_empty() => {
+                    match text_search(query_text, &filters, limit, 0).await {
+                        Ok(text_results) => {
+                            hybrid_combine_results(vector_results, text_results, limit, 0)
+                        }
+                        Err(_) => vector_results.into_iter().take(limit as usize).collect(),
+                    }
+                }
+                Ok(_) => text_search(query_text, &filters, limit, 0)
+                    .await
+                    .unwrap_or_default(),
+                Err(_) => text_search(query_text, &filters, limit, 0)
+                    .await
+                    .unwrap_or_default(),
+            }
+        }
+        None if !image_files.is_empty() => {
+            match vector_search(&None, &image_files, &filters, limit, 0).await {
+                Ok(results) => results,
+                Err(_) => browse_products(&filters, limit, 0)
+                    .await
+                    .unwrap_or_default(),
+            }
+        }
+        None => browse_products(&filters, limit, 0)
+            .await
+            .unwrap_or_default(),
     };
 
     let total_count = results.len() as u64;
@@ -119,10 +124,13 @@ pub async fn optimized_search_products(
         enhanced_query,
         ai_enhancement_triggered,
         processing_time_ms: processing_time,
+        inferred_category,
     })
 }
 
-async fn enhance_query_with_ai(query: &str) -> Result<String, VerboseHTTPError> {
+async fn enhance_query_with_ai(
+    query: &str,
+) -> Result<(String, Option<crate::products::schemas::ProductCategory>), VerboseHTTPError> {
     let groq_api_key = var("GROQ_API_KEY").map_err(|_| {
         VerboseHTTPError::Standard(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -133,7 +141,7 @@ async fn enhance_query_with_ai(query: &str) -> Result<String, VerboseHTTPError> 
     let groq_model = GROQ_AI_MODEL.to_string();
 
     let prompt = format!(
-        "You are a product search query optimizer for an e-commerce platform. Transform the following casual search query into optimized product search terms.
+        "You are a product search query optimizer for an e-commerce platform. Transform the following casual search query into optimized product search terms and categorize it.
 
 Original query: \"{}\"
 
@@ -142,11 +150,21 @@ Your task:
 2. Remove conversational language from the original query  
 3. Add relevant synonyms and related terms
 4. Focus on searchable keywords that would appear in product listings
+5. Categorize the query into one of the following exact product categories:
+   Smartphones, Computers, Audio, Cameras, Gaming, Wearables, HomeElectronics, MensClothing, WomensClothing, 
+   UnisexClothing, Shoes, Accessories, Jewelry, Bags, Beauty, Furniture, HomeDecor, Kitchen, Garden, HomeTools, 
+   HomeImprovement, FitnessEquipment, OutdoorGear, SportsEquipment, Bicycles, WaterSports, WinterSports, 
+   CarParts, Motorcycles, AutoTools, CarAccessories, Books, Music, Movies, VideoGames, HealthEquipment, 
+   PersonalCare, Supplements, MedicalDevices, BabyClothing, Toys, BabyGear, KidsElectronics, Collectibles, 
+   Antiques, Art, Crafts, OfficeSupplies, IndustrialEquipment, BusinessEquipment, Other
 
 Return only a JSON object with this exact format:
-{{\"enhanced_query\": \"your optimized search terms here\"}}
+{{
+  \"enhanced_query\": \"your optimized search terms here\",
+  \"category\": \"ExactCategoryNameFromTheList\"
+}}
 
-Do not include any other text, explanations, or formatting like markdown code blocks.",
+Important: Do not include any other text, explanations, or formatting like markdown code blocks. Do not call any scripts, functions or attempt to execute any code.",
         query
     );
 
@@ -155,7 +173,7 @@ Do not include any other text, explanations, or formatting like markdown code bl
         messages: vec![
             GroqMessage {
                 role: "system".to_string(),
-                content: "You are a product search query optimizer. Respond only with a JSON object containing the enhanced query. No markdown formatting or extra text.".to_string(),
+                content: "You are a product search query optimizer. Respond only with a JSON object containing the enhanced query. No markdown formatting, script execution, function calls or extra text.".to_string(),
             },
             GroqMessage {
                 role: "user".to_string(),
@@ -220,13 +238,11 @@ Do not include any other text, explanations, or formatting like markdown code bl
     let choice = &groq_response.choices[0];
 
     if let Some(content) = &choice.message.content {
-        // Try to parse as JSON first
         if let Ok(parsed_json) = serde_json::from_str::<GroqEnhancementResponse>(content) {
             let enhanced_query = parsed_json.enhanced_query.trim().to_string();
-            return Ok(enhanced_query);
+            return Ok((enhanced_query, parsed_json.category));
         }
 
-        // If JSON parsing fails, try to extract content directly
         let cleaned_content = content
             .trim()
             .trim_matches('`')
@@ -234,33 +250,33 @@ Do not include any other text, explanations, or formatting like markdown code bl
             .trim()
             .trim_matches('"');
 
-        // Try parsing the cleaned content as JSON
         if let Ok(parsed_json) = serde_json::from_str::<GroqEnhancementResponse>(cleaned_content) {
             let enhanced_query = parsed_json.enhanced_query.trim().to_string();
-            return Ok(enhanced_query);
+            return Ok((enhanced_query, parsed_json.category));
         }
 
-        // Fallback: return the content as-is if it looks like a query
         let fallback_query = cleaned_content.to_string();
-        return Ok(fallback_query);
+        return Ok((fallback_query, None));
     }
 
-    Ok(query.to_string())
+    Ok((query.to_string(), None))
 }
 
+#[inline]
 fn hybrid_combine_results(
     vector_results: Vec<SearchResult>,
     text_results: Vec<SearchResult>,
     limit: u32,
     offset: u32,
 ) -> Vec<SearchResult> {
-    let mut result_map: HashMap<String, SearchResult> = HashMap::new();
-    let mut scores: HashMap<String, f32> = HashMap::new();
+    let mut result_map: HashMap<String, SearchResult> =
+        HashMap::with_capacity(vector_results.len() + text_results.len());
+    let mut scores: HashMap<String, f32> =
+        HashMap::with_capacity(vector_results.len() + text_results.len());
 
-    // Add vector results with weighted scoring
     for (index, mut result) in vector_results.into_iter().enumerate() {
         let vector_score = result.similarity_score.unwrap_or(0.0);
-        let position_penalty = (index as f32) * 0.01; // Small penalty for position
+        let position_penalty = (index as f32) * 0.01;
         let weighted_score = (vector_score * HYBRID_VECTOR_WEIGHT) - position_penalty;
 
         result.similarity_score = Some(weighted_score);
@@ -268,34 +284,33 @@ fn hybrid_combine_results(
         result_map.insert(result.product_id.clone(), result);
     }
 
-    // Add text results with weighted scoring
     for (index, result) in text_results.into_iter().enumerate() {
-        let text_score = 1.0 - (index as f32 * 0.05); // Decreasing score based on position
+        let text_score = 1.0 - (index as f32 * 0.05);
         let position_penalty = (index as f32) * 0.01;
         let weighted_score = (text_score * HYBRID_TEXT_WEIGHT) - position_penalty;
 
         let product_id = result.product_id.clone();
 
-        if let Some(existing_score) = scores.get(&product_id) {
-            // Combine scores if product appears in both results
-            let combined_score = existing_score + weighted_score;
-            scores.insert(product_id.clone(), combined_score);
+        match scores.get(&product_id) {
+            Some(existing_score) => {
+                let combined_score = existing_score + weighted_score;
+                scores.insert(product_id.clone(), combined_score);
 
-            if let Some(existing_result) = result_map.get_mut(&product_id) {
-                existing_result.similarity_score = Some(combined_score);
+                if let Some(existing_result) = result_map.get_mut(&product_id) {
+                    existing_result.similarity_score = Some(combined_score);
+                }
             }
-        } else {
-            // Add new result from text search
-            let mut new_result = result;
-            new_result.similarity_score = Some(weighted_score);
-            scores.insert(product_id.clone(), weighted_score);
-            result_map.insert(product_id, new_result);
+            None => {
+                let mut new_result = result;
+                new_result.similarity_score = Some(weighted_score);
+                scores.insert(product_id.clone(), weighted_score);
+                result_map.insert(product_id, new_result);
+            }
         }
     }
 
-    // Convert to vector and sort by combined score
     let mut final_results: Vec<SearchResult> = result_map.into_values().collect();
-    final_results.sort_by(|a, b| {
+    final_results.sort_unstable_by(|a, b| {
         let score_a = a.similarity_score.unwrap_or(0.0);
         let score_b = b.similarity_score.unwrap_or(0.0);
         score_b
@@ -303,7 +318,6 @@ fn hybrid_combine_results(
             .unwrap_or(std::cmp::Ordering::Equal)
     });
 
-    // Apply offset and limit
     let start = offset as usize;
     let end = start + (limit as usize);
 
@@ -326,7 +340,6 @@ async fn vector_search(
     let database = DB.get().unwrap();
     let collection: Collection<Product> = database.collection("products");
 
-    // Try ANN vector search first
     match ann_vector_search(&collection, &embedding, filters, limit, offset).await {
         Ok(results) if !results.is_empty() => Ok(results),
         Ok(_) => linear_vector_search(&collection, &embedding, filters, limit, offset).await,
@@ -343,7 +356,6 @@ async fn ann_vector_search(
 ) -> Result<Vec<SearchResult>, VerboseHTTPError> {
     let mut pipeline = vec![];
 
-    // Use MongoDB's $vectorSearch for ANN
     let candidates = std::cmp::max(
         MIN_SEARCH_CANDIDATES,
         limit * VECTOR_SEARCH_CANDIDATES_MULTIPLIER,
@@ -360,27 +372,23 @@ async fn ann_vector_search(
     };
     pipeline.push(vector_search_stage);
 
-    // Add similarity score
     pipeline.push(doc! {
         "$addFields": {
             "similarity": { "$meta": "vectorSearchScore" }
         }
     });
 
-    // Apply filters
     let match_stage = build_filter_stage(filters);
     if !match_stage.is_empty() {
         pipeline.push(doc! { "$match": match_stage });
     }
 
-    // Apply threshold filter
     pipeline.push(doc! {
         "$match": {
             "similarity": { "$gte": SEARCH_SIMILARITY_THRESHOLD }
         }
     });
 
-    // Add user info
     pipeline.push(doc! {
         "$lookup": {
             "from": "users",
@@ -390,7 +398,6 @@ async fn ann_vector_search(
         }
     });
 
-    // Skip and limit
     if offset > 0 {
         pipeline.push(doc! { "$skip": offset as i64 });
     }
@@ -427,7 +434,6 @@ async fn linear_vector_search(
         pipeline.push(doc! { "$match": match_stage });
     }
 
-    // Calculate similarity using dot product
     pipeline.push(doc! {
         "$addFields": {
             "similarity": {
@@ -500,7 +506,6 @@ async fn text_search(
 
     let mut text_conditions = Vec::new();
 
-    // Only search title and tags (not description) per user requirements
     for variant in &search_variants {
         if !variant.is_empty() {
             text_conditions.push(doc! {
@@ -851,67 +856,52 @@ fn build_filter_stage(filters: &SearchFilters) -> Document {
     match_doc
 }
 
+#[inline]
 fn convert_doc_to_search_result(doc: Document) -> Result<SearchResult, Box<dyn std::error::Error>> {
-    let product_id = doc.get_str("product_id").map_err(|e| e)?.to_string();
+    let product_id = doc.get_str("product_id")?.to_string();
+    let title = doc.get_str("title")?.to_string();
+    let description = doc.get_str("description")?.to_string();
 
-    let title = doc.get_str("title").map_err(|e| e)?.to_string();
-
-    let description = doc.get_str("description").map_err(|e| e)?.to_string();
-
-    let product_type_str = doc.get_str("product_type").map_err(|e| e)?;
-    let product_type = match product_type_str {
+    let product_type = match doc.get_str("product_type")? {
         "new" => ProductType::New,
         "used" => ProductType::Used,
         _ => ProductType::New,
     };
 
-    let category_str = doc.get_str("category").map_err(|e| e)?;
+    let category_str = doc.get_str("category")?;
     let category = serde_json::from_str::<ProductCategory>(&format!("\"{}\"", category_str))?;
 
     let tags = doc
-        .get_array("tags")
-        .map_err(|e| e)?
+        .get_array("tags")?
         .iter()
-        .filter_map(|tag| tag.as_str().map(|s| s.to_string()))
+        .filter_map(|tag| tag.as_str().map(str::to_string))
         .collect();
 
-    let quantity_doc = doc.get_document("quantity").map_err(|e| e)?;
+    let quantity_doc = doc.get_document("quantity")?;
     let quantity = ProductQuantity {
         min_quantity: quantity_doc.get_i32("min_quantity").unwrap_or(1) as u32,
         max_quantity: quantity_doc.get_i32("max_quantity").unwrap_or(1) as u32,
     };
 
-    // Handle price field - it might be stored as a number or string
-    let price = if let Ok(price_str) = doc.get_str("price") {
-        Some(price_str.to_string())
-    } else if let Ok(price_f64) = doc.get_f64("price") {
-        Some(price_f64.to_string())
-    } else if let Ok(price_i32) = doc.get_i32("price") {
-        Some(price_i32.to_string())
-    } else if let Ok(price_i64) = doc.get_i64("price") {
-        Some(price_i64.to_string())
-    } else {
-        None
-    };
+    let price = doc
+        .get_str("price")
+        .map(str::to_string)
+        .or_else(|_| doc.get_f64("price").map(|p| p.to_string()))
+        .or_else(|_| doc.get_i32("price").map(|p| p.to_string()))
+        .or_else(|_| doc.get_i64("price").map(|p| p.to_string()))
+        .ok();
 
-    let thumbnail_url = doc.get_str("thumbnail_url").ok().map(|s| s.to_string());
-    let created_at = doc.get_i64("created_at").map_err(|e| e)? as u64;
-
+    let thumbnail_url = doc.get_str("thumbnail_url").ok().map(str::to_string);
+    let created_at = doc.get_i64("created_at")? as u64;
     let similarity_score = doc.get_f64("similarity").ok().map(|s| s as f32);
 
-    let user_info = doc.get_array("user_info").map_err(|e| e)?;
-    let username = if let Some(user_doc) = user_info.first() {
-        if let Some(user_obj) = user_doc.as_document() {
-            user_obj
-                .get_str("username")
-                .unwrap_or("unknown")
-                .to_string()
-        } else {
-            "unknown".to_string()
-        }
-    } else {
-        "unknown".to_string()
-    };
+    let user_info = doc.get_array("user_info")?;
+    let username = user_info
+        .first()
+        .and_then(|user_doc| user_doc.as_document())
+        .and_then(|user_obj| user_obj.get_str("username").ok())
+        .unwrap_or("unknown")
+        .to_string();
 
     Ok(SearchResult {
         product_id,
@@ -927,148 +917,4 @@ fn convert_doc_to_search_result(doc: Document) -> Result<SearchResult, Box<dyn s
         similarity_score,
         username,
     })
-}
-
-// Audio transcription using Groq Whisper
-pub async fn transcribe_audio(
-    audio_data: Bytes,
-    language: Option<String>,
-) -> Result<String, VerboseHTTPError> {
-    let groq_api_key = var("GROQ_API_KEY").map_err(|_| {
-        VerboseHTTPError::Standard(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "GROQ API key not configured".to_string(),
-        )
-    })?;
-
-    // Validate language
-    let language = match language.as_deref() {
-        Some("en") | Some("hi") => language,
-        Some(_) => {
-            return Err(VerboseHTTPError::Standard(
-                StatusCode::BAD_REQUEST,
-                "Language must be 'en' (English) or 'hi' (Hindi)".to_string(),
-            ));
-        }
-        None => None, // Auto-detect
-    };
-
-    // Create multipart form
-    let form = reqwest::multipart::Form::new()
-        .text("model", GROQ_WHISPER_TRANSCRIPTION_MODEL)
-        .part(
-            "file",
-            reqwest::multipart::Part::bytes(audio_data.to_vec())
-                .file_name("audio.wav")
-                .mime_str("audio/wav")
-                .unwrap(),
-        );
-
-    let form = if let Some(lang) = language {
-        form.text("language", lang)
-    } else {
-        form
-    };
-
-    let client = reqwest::Client::new();
-    let response = client
-        .post(GROQ_WHISPER_TRANSCRIPTION_ENDPOINT)
-        .header("Authorization", format!("Bearer {}", groq_api_key))
-        .multipart(form)
-        .send()
-        .await
-        .map_err(|_| {
-            VerboseHTTPError::Standard(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Failed to call Groq Whisper API".to_string(),
-            )
-        })?;
-
-    let status_code = response.status();
-    if !status_code.is_success() {
-        return Err(VerboseHTTPError::Standard(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Groq Whisper API request failed: {}", status_code),
-        ));
-    }
-
-    let response_text = response.text().await.map_err(|_| {
-        VerboseHTTPError::Standard(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Failed to read Groq Whisper response".to_string(),
-        )
-    })?;
-
-    let transcription_response: AudioTranscriptionResponse = serde_json::from_str(&response_text)
-        .map_err(|_| {
-        VerboseHTTPError::Standard(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Failed to parse Groq Whisper response".to_string(),
-        )
-    })?;
-
-    Ok(transcription_response.text)
-}
-
-// Audio translation using Groq Whisper (Hindi to English)
-pub async fn translate_audio(audio_data: Bytes) -> Result<String, VerboseHTTPError> {
-    let groq_api_key = var("GROQ_API_KEY").map_err(|_| {
-        VerboseHTTPError::Standard(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "GROQ API key not configured".to_string(),
-        )
-    })?;
-
-    // Create multipart form for translation
-    let form = reqwest::multipart::Form::new()
-        .text("model", GROQ_WHISPER_TRANSLATION_MODEL)
-        .part(
-            "file",
-            reqwest::multipart::Part::bytes(audio_data.to_vec())
-                .file_name("audio.wav")
-                .mime_str("audio/wav")
-                .unwrap(),
-        );
-
-    let client = reqwest::Client::new();
-    let response = client
-        .post(GROQ_WHISPER_TRANSLATION_ENDPOINT)
-        .header("Authorization", format!("Bearer {}", groq_api_key))
-        .multipart(form)
-        .send()
-        .await
-        .map_err(|_| {
-            VerboseHTTPError::Standard(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Failed to call Groq Whisper Translation API".to_string(),
-            )
-        })?;
-
-    let status_code = response.status();
-    if !status_code.is_success() {
-        return Err(VerboseHTTPError::Standard(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!(
-                "Groq Whisper Translation API request failed: {}",
-                status_code
-            ),
-        ));
-    }
-
-    let response_text = response.text().await.map_err(|_| {
-        VerboseHTTPError::Standard(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Failed to read Groq Whisper Translation response".to_string(),
-        )
-    })?;
-
-    let translation_response: AudioTranslationResponse = serde_json::from_str(&response_text)
-        .map_err(|_| {
-            VerboseHTTPError::Standard(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Failed to parse Groq Whisper Translation response".to_string(),
-            )
-        })?;
-
-    Ok(translation_response.text)
 }

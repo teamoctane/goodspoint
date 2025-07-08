@@ -1,5 +1,3 @@
-use std::collections::HashSet;
-
 const STOPWORDS: &[&str] = &[
     "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "has", "he", "in", "is", "it",
     "its", "of", "on", "that", "the", "to", "was", "will", "with", "the", "this", "but", "they",
@@ -9,9 +7,12 @@ const STOPWORDS: &[&str] = &[
     "who", "oil", "sit", "now", "find", "down", "day", "did", "get", "come", "made", "may", "part",
 ];
 
-pub fn preprocess_text(text: &str) -> String {
-    let stopwords: HashSet<&str> = STOPWORDS.iter().cloned().collect();
+#[inline]
+fn is_stopword(word: &str) -> bool {
+    STOPWORDS.contains(&word)
+}
 
+pub fn preprocess_text(text: &str) -> String {
     text.to_lowercase()
         .chars()
         .map(|c| {
@@ -26,7 +27,7 @@ pub fn preprocess_text(text: &str) -> String {
         .filter(|word| {
             !word.is_empty()
                 && word.len() > 1
-                && !stopwords.contains(word)
+                && !is_stopword(word)
                 && word.chars().any(|c| c.is_alphabetic())
         })
         .collect::<Vec<&str>>()
@@ -34,13 +35,12 @@ pub fn preprocess_text(text: &str) -> String {
 }
 
 pub fn has_stopwords(text: &str) -> bool {
-    let stopwords: HashSet<&str> = STOPWORDS.iter().cloned().collect();
-
     text.to_lowercase()
         .split_whitespace()
-        .any(|word| stopwords.contains(word))
+        .any(|word| is_stopword(word))
 }
 
+#[inline]
 pub fn normalize_punctuation(text: &str) -> String {
     text.chars()
         .map(|c| match c {
@@ -56,22 +56,22 @@ pub fn normalize_punctuation(text: &str) -> String {
         .join(" ")
 }
 
+#[inline]
 pub fn extract_keywords(text: &str) -> Vec<String> {
-    let processed = preprocess_text(text);
-
-    processed
+    preprocess_text(text)
         .split_whitespace()
         .filter(|word| word.len() >= 3)
-        .map(|word| word.to_string())
+        .map(str::to_string)
         .collect()
 }
 
 pub fn create_search_variants(query: &str) -> Vec<String> {
-    let mut variants = Vec::new();
+    let mut variants = Vec::with_capacity(4);
 
     variants.push(query.to_string());
 
-    variants.push(preprocess_text(query));
+    let processed = preprocess_text(query);
+    variants.push(processed);
 
     let normalized = normalize_punctuation(query);
     if normalized != query {
@@ -83,7 +83,7 @@ pub fn create_search_variants(query: &str) -> Vec<String> {
         variants.push(keywords.join(" "));
     }
 
-    variants.sort_by(|a, b| b.len().cmp(&a.len()));
+    variants.sort_unstable_by(|a, b| b.len().cmp(&a.len()));
     variants.dedup();
 
     variants

@@ -14,7 +14,10 @@ pub const HYBRID_VECTOR_WEIGHT: f32 = 0.7;
 pub const HYBRID_TEXT_WEIGHT: f32 = 0.3;
 pub const VECTOR_SEARCH_CANDIDATES_MULTIPLIER: u32 = 10;
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+pub const MAX_IMAGE_SIZE: usize = 5 * 1024 * 1024;
+pub const MAX_IMAGES_PER_REQUEST: usize = 2;
+
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SearchMode {
     Vector,
@@ -23,7 +26,7 @@ pub enum SearchMode {
     Hybrid,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SearchSort {
     Relevance,
@@ -32,7 +35,7 @@ pub enum SearchSort {
     Popularity,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SortOrder {
     Asc,
@@ -101,6 +104,7 @@ pub struct SimpleSearchResponse {
     pub enhanced_query: Option<String>,
     pub ai_enhancement_triggered: bool,
     pub processing_time_ms: u64,
+    pub inferred_category: Option<crate::products::schemas::ProductCategory>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -116,6 +120,7 @@ pub struct GroqQueryEnhancementRequest {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct GroqEnhancementResponse {
     pub enhanced_query: String,
+    pub category: Option<crate::products::schemas::ProductCategory>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -237,6 +242,8 @@ pub struct SearchFilters {
     pub enabled_only: bool,
 }
 
+
+
 impl Default for SearchFilters {
     fn default() -> Self {
         Self {
@@ -255,46 +262,18 @@ impl Default for SearchFilters {
 
 impl Default for SearchMode {
     fn default() -> Self {
-        SearchMode::Hybrid
+        Self::Hybrid
     }
 }
 
 impl Default for SearchSort {
     fn default() -> Self {
-        SearchSort::Relevance
+        Self::Relevance
     }
 }
 
 impl Default for SortOrder {
     fn default() -> Self {
-        SortOrder::Desc
+        Self::Desc
     }
-}
-
-// Audio transcription and translation schemas
-pub const GROQ_WHISPER_TRANSCRIPTION_ENDPOINT: &str =
-    "https://api.groq.com/openai/v1/audio/transcriptions";
-pub const GROQ_WHISPER_TRANSLATION_ENDPOINT: &str =
-    "https://api.groq.com/openai/v1/audio/translations";
-pub const GROQ_WHISPER_TRANSCRIPTION_MODEL: &str = "distil-whisper-large-v3-en";
-pub const GROQ_WHISPER_TRANSLATION_MODEL: &str = "whisper-large-v3";
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct AudioTranscriptionRequest {
-    pub language: Option<String>, // "en" or "hi"
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct AudioTranslationRequest {
-    // Hindi to English translation
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct AudioTranscriptionResponse {
-    pub text: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct AudioTranslationResponse {
-    pub text: String,
 }

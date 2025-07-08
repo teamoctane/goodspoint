@@ -2,13 +2,12 @@ use axum::{
     Json,
     body::Body,
     http::{
-        Method, Request, StatusCode,
+        Request, StatusCode,
         header::{COOKIE, SET_COOKIE},
     },
     middleware::Next,
     response::{IntoResponse, Response},
 };
-use axum_csrf::CsrfToken;
 use email_address::EmailAddress;
 use httpdate::fmt_http_date;
 use mongodb::{Collection, bson::doc};
@@ -54,7 +53,7 @@ pub(crate) async fn login_user(Json(payload): Json<UserIn>) -> impl IntoResponse
         .into_response();
     }
 
-    if let Some(email) = &payload.email {
+    if let Some(ref email) = payload.email {
         if !EmailAddress::is_valid(email) {
             return VerboseHTTPError::Standard(
                 StatusCode::BAD_REQUEST,
@@ -64,40 +63,59 @@ pub(crate) async fn login_user(Json(payload): Json<UserIn>) -> impl IntoResponse
         }
     }
 
-    if let Some(user) =
+    let Some(user) =
         retrieve_user_by_username_or_email(payload.username.as_deref(), payload.email.as_deref())
             .await
-    {
-        let salt = user.salt;
-        if verify_password(payload.password.clone(), salt, user.password.clone()).await {
-            if let Some(auth_object) = generate_cookie(user.username.clone()).await {
-                let expire_time = UNIX_EPOCH
-                    + Duration::from_secs(auth_object.cookie_expire.parse::<u64>().unwrap_or(0));
-                let formatted_expire_time = fmt_http_date(SystemTime::from(expire_time));
-                let domain = var("DOMAIN").unwrap_or_else(|_| ".goodspoint.com".to_string());
+    else {
+        return VerboseHTTPError::Standard(
+            StatusCode::BAD_REQUEST,
+            "Invalid username or password".to_string(),
+        )
+        .into_response();
+    };
 
-                let headers = [(
-                    SET_COOKIE,
-                    format!(
-                        "GOODSPOINT_AUTHENTICATION={}; HttpOnly; Path=/; Domain={}; expires={}",
-                        auth_object.cookie, domain, formatted_expire_time
-                    ),
-                )];
-
-                return (headers, Json(json!({ "status": "ok" }))).into_response();
-            }
-        }
+    if !verify_password(payload.password, user.salt.clone(), user.password.clone()).await {
+        return VerboseHTTPError::Standard(
+            StatusCode::BAD_REQUEST,
+            "Invalid username or password".to_string(),
+        )
+        .into_response();
     }
 
-    VerboseHTTPError::Standard(
-        StatusCode::BAD_REQUEST,
-        "Invalid username or password".to_string(),
-    )
-    .into_response()
+    if !user.email_verified {
+        return VerboseHTTPError::Standard(
+            StatusCode::FORBIDDEN,
+            "Email not verified. Please verify your email before logging in.".to_string(),
+        )
+        .into_response();
+    }
+
+    let Some(auth_object) = generate_cookie(user.username.clone()).await else {
+        return VerboseHTTPError::Standard(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Internal server error".to_string(),
+        )
+        .into_response();
+    };
+
+    let expire_time =
+        UNIX_EPOCH + Duration::from_secs(auth_object.cookie_expire.parse::<u64>().unwrap_or(0));
+    let formatted_expire_time = fmt_http_date(SystemTime::from(expire_time));
+    let domain = var("DOMAIN").unwrap_or_else(|_| ".goodspoint.com".to_string());
+
+    let headers = [(
+        SET_COOKIE,
+        format!(
+            "GOODSPOINT_AUTHENTICATION={}; HttpOnly; Path=/; Domain={}; expires={}",
+            auth_object.cookie, domain, formatted_expire_time
+        ),
+    )];
+
+    (headers, Json(json!({ "status": "ok" }))).into_response()
 }
 
 pub(crate) async fn register_user(Json(payload): Json<UserIn>) -> impl IntoResponse {
-    if let Some(email) = &payload.email {
+    if let Some(ref email) = payload.email {
         if !EmailAddress::is_valid(email) {
             return VerboseHTTPError::Standard(
                 StatusCode::BAD_REQUEST,
@@ -107,53 +125,51 @@ pub(crate) async fn register_user(Json(payload): Json<UserIn>) -> impl IntoRespo
         }
     }
 
-    if let Some((username_exists, email_exists)) = check_user_existence(
+    let Some((username_exists, email_exists)) = check_user_existence(
         payload.username.as_deref().unwrap_or(""),
         payload.email.as_deref().unwrap_or(""),
     )
     .await
-    {
-        if username_exists && email_exists {
-            return VerboseHTTPError::Standard(
-                StatusCode::BAD_REQUEST,
-                "Username and email already taken".to_string(),
-            )
-            .into_response();
-        } else if username_exists {
-            return VerboseHTTPError::Standard(
-                StatusCode::BAD_REQUEST,
-                "Username already taken".to_string(),
-            )
-            .into_response();
-        } else if email_exists {
-            return VerboseHTTPError::Standard(
-                StatusCode::BAD_REQUEST,
-                "Email already taken".to_string(),
-            )
-            .into_response();
-        }
-    }
-
-    let (hashed_password, salt) = match hash_password(payload.password).await {
-        Some((hash, salt)) => (hash, salt),
-        None => {
-            return VerboseHTTPError::Standard(
-                StatusCode::BAD_REQUEST,
-                "Invalid password".to_string(),
-            )
-            .into_response();
-        }
+    else {
+        return VerboseHTTPError::Standard(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Internal server error".to_string(),
+        )
+        .into_response();
     };
 
-    let auth_object = match generate_cookie(payload.username.clone().unwrap_or_default()).await {
-        Some(auth) => auth,
-        None => {
-            return VerboseHTTPError::Standard(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Internal server error".to_string(),
-            )
+    if username_exists && email_exists {
+        return VerboseHTTPError::Standard(
+            StatusCode::BAD_REQUEST,
+            "Username and email already taken".to_string(),
+        )
+        .into_response();
+    } else if username_exists {
+        return VerboseHTTPError::Standard(
+            StatusCode::BAD_REQUEST,
+            "Username already taken".to_string(),
+        )
+        .into_response();
+    } else if email_exists {
+        return VerboseHTTPError::Standard(
+            StatusCode::BAD_REQUEST,
+            "Email already taken".to_string(),
+        )
+        .into_response();
+    }
+
+    let Some((hashed_password, salt)) = hash_password(payload.password).await else {
+        return VerboseHTTPError::Standard(StatusCode::BAD_REQUEST, "Invalid password".to_string())
             .into_response();
-        }
+    };
+
+    let Some(auth_object) = generate_cookie(payload.username.clone().unwrap_or_default()).await
+    else {
+        return VerboseHTTPError::Standard(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Internal server error".to_string(),
+        )
+        .into_response();
     };
 
     let user = match UserOut::new(
@@ -175,7 +191,14 @@ pub(crate) async fn register_user(Json(payload): Json<UserIn>) -> impl IntoRespo
         }
     };
 
-    let database = DB.get().unwrap();
+    let Some(database) = DB.get() else {
+        return VerboseHTTPError::Standard(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Internal server error".to_string(),
+        )
+        .into_response();
+    };
+
     let collection: Collection<UserOut> = database.collection("users");
 
     if collection.insert_one(&user).await.is_err() {
@@ -186,8 +209,13 @@ pub(crate) async fn register_user(Json(payload): Json<UserIn>) -> impl IntoRespo
         .into_response();
     }
 
+    if let Some(ref email) = payload.email {
+        let _ = super::delegates::send_email_otp(email).await;
+    }
+
     Json(json!({
         "status": "ok",
+        "message": "Account created successfully. Please check your email for verification code.",
         "user": UserQuery {
             username: Some(user.username.clone()),
             email: Some(user.email.to_string()),
@@ -213,22 +241,38 @@ pub(crate) async fn get_user(req: Request<Body>) -> impl IntoResponse {
     VerboseHTTPError::Standard(StatusCode::UNAUTHORIZED, "Unauthorized".to_string()).into_response()
 }
 
+pub(crate) async fn get_whatsapp_status(req: Request<Body>) -> impl IntoResponse {
+    if let Some(user) = req.extensions().get::<UserOut>() {
+        return Json(json!({
+            "whatsapp_verified": user.whatsapp_verified,
+            "whatsapp_number": user.whatsapp_number.as_ref().map(|n| n.to_string()),
+        }))
+        .into_response();
+    }
+
+    VerboseHTTPError::Standard(StatusCode::UNAUTHORIZED, "Unauthorized".to_string()).into_response()
+}
+
 pub async fn cookie_auth(mut req: Request<Body>, next: Next) -> Result<Response, VerboseHTTPError> {
-    let database = DB.get().unwrap();
+    let Some(database) = DB.get() else {
+        return Err(VerboseHTTPError::Standard(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Database unavailable".to_string(),
+        ));
+    };
+
     let collection: Collection<UserOut> = database.collection("users");
 
     if let Some(cookie_header) = req.headers().get(COOKIE).and_then(|h| h.to_str().ok()) {
-        if let Some(cookie) = cookie_header.split(';').map(|s| s.trim()).find_map(|pair| {
+        if let Some(cookie) = cookie_header.split(';').map(str::trim).find_map(|pair| {
             let mut parts = pair.splitn(2, '=');
-            if let (Some(name), Some(value)) = (parts.next(), parts.next()) {
-                if name == "GOODSPOINT_AUTHENTICATION" {
-                    return Some(value.to_string());
-                }
+            match (parts.next(), parts.next()) {
+                (Some("GOODSPOINT_AUTHENTICATION"), Some(value)) => Some(value.to_string()),
+                _ => None,
             }
-            None
         }) {
             if let Some(user) = collection
-                .find_one(doc! {"auth.cookie": cookie.clone()})
+                .find_one(doc! {"auth.cookie": &cookie})
                 .await
                 .ok()
                 .flatten()
@@ -237,8 +281,7 @@ pub async fn cookie_auth(mut req: Request<Body>, next: Next) -> Result<Response,
                 if let Ok(expire) = user.auth.cookie_expire.parse::<u64>() {
                     if SystemTime::now()
                         .duration_since(UNIX_EPOCH)
-                        .map(|now| expire > now.as_secs())
-                        .unwrap_or(false)
+                        .map_or(false, |now| expire > now.as_secs())
                     {
                         req.extensions_mut().insert(user);
                         return Ok(next.run(req).await);
@@ -255,34 +298,124 @@ pub async fn cookie_auth(mut req: Request<Body>, next: Next) -> Result<Response,
     ))
 }
 
-#[allow(unused)]
-pub async fn auth_middleware(
-    token: CsrfToken,
-    method: Method,
-    request: Request<Body>,
-    next: Next,
-) -> Result<Response, Response> {
-    if method == Method::POST {
-        if let Some(authenticity_token) = request
-            .headers()
-            .get("x-authenticity-token")
-            .and_then(|h| h.to_str().ok())
-        {
-            if token.verify(authenticity_token).is_err() {
-                return Err((
-                    StatusCode::UNAUTHORIZED,
-                    "Invalid authenticity token".to_string(),
-                )
-                    .into_response());
-            }
-        } else {
-            return Err((
-                StatusCode::UNAUTHORIZED,
-                "Missing authenticity token".to_string(),
+pub async fn change_password_endpoint(req: Request<Body>) -> impl IntoResponse {
+    let Some(user) = req.extensions().get::<UserOut>().cloned() else {
+        return VerboseHTTPError::Standard(StatusCode::UNAUTHORIZED, "Unauthorized".to_string())
+            .into_response();
+    };
+
+    let body_bytes = match axum::body::to_bytes(req.into_body(), usize::MAX).await {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            return VerboseHTTPError::Standard(
+                StatusCode::BAD_REQUEST,
+                "Failed to read request body".to_string(),
             )
-                .into_response());
+            .into_response();
+        }
+    };
+
+    let request: super::schemas::ChangePasswordRequest = match serde_json::from_slice(&body_bytes) {
+        Ok(req) => req,
+        Err(_) => {
+            return VerboseHTTPError::Standard(StatusCode::BAD_REQUEST, "Invalid JSON".to_string())
+                .into_response();
+        }
+    };
+
+    match super::delegates::change_password(&user, request.old_password, request.new_password).await
+    {
+        Ok(response) => Json(response).into_response(),
+        Err(error) => error.into_response(),
+    }
+}
+
+pub(crate) async fn send_email_otp_endpoint(
+    Json(request): Json<super::schemas::SendEmailOTPRequest>,
+) -> impl IntoResponse {
+    match super::delegates::send_email_otp(&request.email).await {
+        Ok(_) => {
+            Json(json!({"success": true, "message": "OTP sent to email"})).into_response()
+        }
+        Err(error) => {
+            error.into_response()
         }
     }
+}
 
-    Ok(next.run(request).await)
+pub(crate) async fn verify_email_otp_endpoint(
+    Json(request): Json<super::schemas::VerifyEmailOTPRequest>,
+) -> impl IntoResponse {
+    match super::delegates::verify_email_otp(&request.email, &request.otp).await {
+        Ok(_) => {
+            Json(json!({"success": true, "message": "Email verified successfully"})).into_response()
+        }
+        Err(error) => {
+            error.into_response()
+        }
+    }
+}
+
+pub(crate) async fn send_whatsapp_otp_endpoint(req: Request<Body>) -> impl IntoResponse {
+    let body_bytes = match axum::body::to_bytes(req.into_body(), usize::MAX).await {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            return VerboseHTTPError::Standard(
+                StatusCode::BAD_REQUEST,
+                "Failed to read request body".to_string(),
+            )
+            .into_response();
+        }
+    };
+
+    let request: super::schemas::SendWhatsAppOTPRequest = match serde_json::from_slice(&body_bytes)
+    {
+        Ok(req) => req,
+        Err(_) => {
+            return VerboseHTTPError::Standard(StatusCode::BAD_REQUEST, "Invalid JSON".to_string())
+                .into_response();
+        }
+    };
+
+    match super::delegates::send_whatsapp_otp(&request.whatsapp_number).await {
+        Ok(_) => Json(json!({"success": true, "message": "OTP sent to WhatsApp"})).into_response(),
+        Err(error) => error.into_response(),
+    }
+}
+
+pub(crate) async fn verify_whatsapp_otp_endpoint(req: Request<Body>) -> impl IntoResponse {
+    let Some(user) = req.extensions().get::<UserOut>().cloned() else {
+        return VerboseHTTPError::Standard(StatusCode::UNAUTHORIZED, "Unauthorized".to_string())
+            .into_response();
+    };
+
+    let body_bytes = match axum::body::to_bytes(req.into_body(), usize::MAX).await {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            return VerboseHTTPError::Standard(
+                StatusCode::BAD_REQUEST,
+                "Failed to read request body".to_string(),
+            )
+            .into_response();
+        }
+    };
+
+    let request: super::schemas::VerifyWhatsAppOTPRequest =
+        match serde_json::from_slice(&body_bytes) {
+            Ok(req) => req,
+            Err(_) => {
+                return VerboseHTTPError::Standard(
+                    StatusCode::BAD_REQUEST,
+                    "Invalid JSON".to_string(),
+                )
+                .into_response();
+            }
+        };
+
+    match super::delegates::verify_whatsapp_otp(&user, &request.whatsapp_number, &request.otp).await
+    {
+        Ok(_) => Json(json!({"success": true, "message": "WhatsApp verified successfully"}))
+            .into_response(),
+        Err(error) => error.into_response(),
+    }
 }

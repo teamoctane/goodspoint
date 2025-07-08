@@ -1,32 +1,30 @@
 use axum::{
-    Json, Router,
+    Router,
     middleware::from_fn as middleware_from_fn,
-    response::IntoResponse,
     routing::{delete, get, post, put},
 };
-use axum_csrf::{CsrfConfig, CsrfToken, Key};
 use mongodb::{Client, Database, options::ClientOptions};
 use std::{env::var, net::SocketAddr, sync::OnceLock};
 use dotenv::dotenv;
-use serde_json::json;
 
 mod apex;
 mod auth;
 mod chat;
+mod notifications;
+mod orders;
 mod products;
+mod recommendations;
 mod search;
 
 use apex::endpoints::*;
 use auth::endpoints::*;
 use chat::endpoints::*;
+use orders::endpoints::*;
 use products::endpoints::*;
+use recommendations::endpoints::{get_recommendations, get_knowledge_graph};
 use search::endpoints::*;
 
 pub(crate) static DB: OnceLock<Database> = OnceLock::new();
-
-async fn csrf_endpoint(token: CsrfToken) -> impl IntoResponse {
-    Json(json!({ "csrf_token": token.authenticity_token().unwrap() }))
-}
 
 #[tokio::main]
 async fn main() {
@@ -52,15 +50,16 @@ async fn main() {
     ));
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
 
-    let cookie_key = Key::generate();
-    let our_domain = var("DOMAIN").unwrap_or_else(|_| "localhost".to_string());
-    let _config = CsrfConfig::default()
-        .with_key(Some(cookie_key))
-        .with_cookie_domain(Some(our_domain));
-
     let protected_routes = Router::new()
         .route("/auth/user", get(get_user))
         .route("/auth/logout", post(logout_user))
+        .route("/auth/change-password", post(change_password_endpoint))
+        .route("/auth/send-whatsapp-otp", post(send_whatsapp_otp_endpoint))
+        .route(
+            "/auth/verify-whatsapp-otp",
+            post(verify_whatsapp_otp_endpoint),
+        )
+        .route("/auth/whatsapp-status", get(get_whatsapp_status))
         .route("/seller/products/create", post(create_product_endpoint))
         .route("/seller/products/list", get(list_my_products_endpoint))
         .route(
@@ -117,25 +116,30 @@ async fn main() {
             "/chat/messages/{message_id}/history",
             get(get_message_history_endpoint),
         )
+        .route(
+            "/chat/quotes/create-order",
+            post(create_order_from_quote_endpoint),
+        )
+        .route("/products/buy-now", post(buy_now_endpoint))
+        .route("/orders/list", get(list_orders_endpoint))
+        .route("/orders/confirm", post(confirm_order_endpoint))
+        .route("/sellers/orders/list", get(list_seller_orders_endpoint))
+        .route("/homepage/recommendations", get(get_recommendations))
+        .route("/homepage/knowledge-graph", get(get_knowledge_graph))
         .layer(middleware_from_fn(cookie_auth));
 
     let unprotected_routes = Router::new()
         .route("/auth/register", post(register_user))
         .route("/auth/login", post(login_user))
+        .route("/auth/send-email-otp", post(send_email_otp_endpoint))
+        .route("/auth/verify-email-otp", post(verify_email_otp_endpoint))
         .route("/products/{product_id}", get(get_product_endpoint))
-        .route("/products/search", post(optimized_search_products_endpoint))
-        .route("/audio/transcribe", post(transcribe_audio_endpoint))
-        .route("/audio/translate", post(translate_audio_endpoint))
-        .route(
-            "/api/knowledge-graph/{user_id}",
-            get(render_knowledge_graph_endpoint),
-        );
+        .route("/products/search", post(optimized_search_products_endpoint));
 
     let app = Router::new()
         .merge(protected_routes)
         .merge(unprotected_routes)
-        .route("/", get(root_endpoint))
-        .route("/auth/csrf_token", get(csrf_endpoint));
+        .route("/", get(root_endpoint));
 
     axum::serve(listener, app).await.unwrap();
 }

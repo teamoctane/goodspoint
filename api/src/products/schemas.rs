@@ -1,56 +1,4 @@
-use serde::{Deserialize, Deserializer, Serialize};
-
-fn ascii_string<'de, D>(deserializer: D) -> Result<String, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let s = String::deserialize(deserializer)?;
-    if !s.is_ascii() {
-        return Err(serde::de::Error::custom("non-ASCII characters not allowed"));
-    }
-    Ok(s)
-}
-
-fn ascii_vec<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let vec = Vec::<String>::deserialize(deserializer)?;
-    for s in &vec {
-        if !s.is_ascii() {
-            return Err(serde::de::Error::custom("non-ASCII characters not allowed"));
-        }
-    }
-    Ok(vec)
-}
-
-fn ascii_option_string<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let opt = Option::<String>::deserialize(deserializer)?;
-    if let Some(ref s) = opt {
-        if !s.is_ascii() {
-            return Err(serde::de::Error::custom("non-ASCII characters not allowed"));
-        }
-    }
-    Ok(opt)
-}
-
-fn ascii_option_vec<'de, D>(deserializer: D) -> Result<Option<Vec<String>>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let opt = Option::<Vec<String>>::deserialize(deserializer)?;
-    if let Some(ref vec) = opt {
-        for s in vec {
-            if !s.is_ascii() {
-                return Err(serde::de::Error::custom("non-ASCII characters not allowed"));
-            }
-        }
-    }
-    Ok(opt)
-}
+use serde::{Deserialize, Serialize};
 
 pub const MAX_TITLE_LENGTH: usize = 200;
 pub const MAX_DESCRIPTION_LENGTH: usize = 2000;
@@ -64,14 +12,21 @@ pub const DEFAULT_PAGE_LIMIT: u32 = 20;
 pub const MAX_PAGE_LIMIT: u32 = 100;
 pub const AI_MAX_TOKENS: u32 = 2048;
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ProductType {
     New,
     Used,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PurchaseType {
+    BuyNow,
+    Inquire,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Hash)]
 #[serde(rename_all = "PascalCase")]
 pub enum ProductCategory {
     Smartphones,
@@ -83,6 +38,7 @@ pub enum ProductCategory {
     HomeElectronics,
     MensClothing,
     WomensClothing,
+    UnisexClothing,
     Shoes,
     Accessories,
     Jewelry,
@@ -126,7 +82,7 @@ pub enum ProductCategory {
     Other,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum QuestionType {
     YesNo,
@@ -135,9 +91,7 @@ pub enum QuestionType {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Question {
-    #[serde(deserialize_with = "ascii_string")]
     pub id: String,
-    #[serde(deserialize_with = "ascii_string")]
     pub question: String,
     pub question_type: QuestionType,
     pub mandatory: bool,
@@ -168,13 +122,15 @@ pub struct ProductQuantity {
 pub struct Product {
     pub product_id: String,
     pub user_id: String,
+    pub username: String,
     pub title: String,
     pub description: String,
     pub product_type: ProductType,
+    pub purchase_type: PurchaseType,
     pub category: ProductCategory,
     pub tags: Vec<String>,
     pub quantity: ProductQuantity,
-    pub price: Option<String>,
+    pub price: f64,
     pub custom_questions: Option<ProductQuestions>,
     #[serde(default)]
     pub gallery: Vec<GalleryItem>,
@@ -187,31 +143,28 @@ pub struct Product {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CreateProductRequest {
-    #[serde(deserialize_with = "ascii_string")]
     pub title: String,
-    #[serde(deserialize_with = "ascii_string")]
     pub description: String,
     pub product_type: ProductType,
+    pub purchase_type: PurchaseType,
     pub category: ProductCategory,
-    #[serde(default, deserialize_with = "ascii_vec")]
+    #[serde(default)]
     pub tags: Vec<String>,
     pub quantity: ProductQuantity,
-    pub price: Option<String>,
+    pub price: f64,
     pub custom_questions: Option<ProductQuestions>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct UpdateProductRequest {
-    #[serde(deserialize_with = "ascii_option_string")]
     pub title: Option<String>,
-    #[serde(deserialize_with = "ascii_option_string")]
     pub description: Option<String>,
     pub product_type: Option<ProductType>,
+    pub purchase_type: Option<PurchaseType>,
     pub category: Option<ProductCategory>,
-    #[serde(deserialize_with = "ascii_option_vec")]
     pub tags: Option<Vec<String>>,
     pub quantity: Option<ProductQuantity>,
-    pub price: Option<String>,
+    pub price: Option<f64>,
     pub custom_questions: Option<ProductQuestions>,
 }
 
@@ -234,7 +187,6 @@ pub struct GenerateQuestionsRequest {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct GenerateQuestionsPayload {
-    #[serde(deserialize_with = "ascii_string")]
     pub description: String,
 }
 
@@ -324,6 +276,61 @@ pub struct ReorderGalleryRequest {
 
 #[derive(serde::Deserialize, Default)]
 pub struct ListMyProductsQuery {
+    pub limit: Option<u32>,
+    pub offset: Option<u32>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OrderStatus {
+    Unpaid,
+    DeliveryPending,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Order {
+    pub order_id: String,
+    pub product_id: String,
+    pub seller_id: String,
+    pub buyer_id: String,
+    pub quantity: u32,
+    pub price: f64,
+    pub status: OrderStatus,
+    pub created_at: u64,
+    pub updated_at: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct BuyNowRequest {
+    pub product_id: String,
+    pub quantity: u32,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ConfirmOrderRequest {
+    pub order_id: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CreateOrderFromQuoteRequest {
+    pub message_id: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct OrderResponse {
+    pub order_id: String,
+    pub product_id: String,
+    pub seller_id: String,
+    pub buyer_id: String,
+    pub quantity: u32,
+    pub price: f64,
+    pub status: OrderStatus,
+    pub created_at: u64,
+    pub updated_at: u64,
+}
+
+#[derive(serde::Deserialize, Default)]
+pub struct ListOrdersQuery {
     pub limit: Option<u32>,
     pub offset: Option<u32>,
 }

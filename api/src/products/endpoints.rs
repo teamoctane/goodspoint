@@ -9,19 +9,26 @@ use serde_json::{Value, json};
 
 use super::{
     delegates::{
-        add_gallery_items, create_product, delete_product, generate_questions_with_groq,
-        get_gallery, get_product_by_id, get_user_product_by_id, is_allowed_content_type,
-        is_allowed_image_type, list_user_products, reorder_gallery, replace_gallery,
-        set_product_questions, update_product,
+        add_gallery_items, buy_now_product, create_product, delete_product,
+        generate_questions_with_groq, get_gallery, get_product_by_id, get_user_product_by_id,
+        is_allowed_content_type, is_allowed_image_type, list_user_products, reorder_gallery,
+        replace_gallery, set_product_questions, update_product,
     },
     schemas::{
-        CreateProductRequest, DEFAULT_PAGE_LIMIT, GenerateQuestionsPayload,
+        BuyNowRequest, CreateProductRequest, DEFAULT_PAGE_LIMIT, GenerateQuestionsPayload,
         GenerateQuestionsRequest, ListMyProductsQuery, MAX_FILE_SIZE, MAX_GALLERY_ITEMS,
         MAX_PAGE_LIMIT, ProductQuestions, ReorderGalleryRequest, UpdateProductRequest,
     },
 };
-use crate::{apex::utils::VerboseHTTPError, auth::schemas::UserOut};
+use crate::{
+    DB,
+    apex::utils::VerboseHTTPError,
+    auth::schemas::UserOut,
+    recommendations::{auto_log_signal, schemas::SignalType},
+};
+use mongodb::{Collection, bson::doc};
 
+#[inline]
 fn strip_embedding_from_product(mut product_value: Value) -> Value {
     if let Some(product_obj) = product_value.as_object_mut() {
         product_obj.remove("embedding");
@@ -35,12 +42,12 @@ pub(crate) async fn create_product_endpoint(
 ) -> impl IntoResponse {
     let mut product_data = String::new();
     let mut thumbnail_file: Option<(String, Bytes, String)> = None;
-    let mut gallery_files: Vec<(String, Bytes, String)> = Vec::new();
+    let mut gallery_files: Vec<(String, Bytes, String)> = Vec::with_capacity(MAX_GALLERY_ITEMS);
 
     while let Ok(Some(field)) = multipart.next_field().await {
-        let field_name = field.name().unwrap_or("").to_string();
+        let field_name = field.name().unwrap_or("");
 
-        match field_name.as_str() {
+        match field_name {
             "product" => {
                 if let Ok(bytes) = field.bytes().await {
                     product_data = String::from_utf8_lossy(&bytes).to_string();
@@ -109,15 +116,55 @@ pub(crate) async fn create_product_endpoint(
     }
 }
 
-pub(crate) async fn get_product_endpoint(Path(product_id): Path<String>) -> impl IntoResponse {
+pub(crate) async fn get_product_endpoint(
+    Path(product_id): Path<String>,
+    headers: axum::http::HeaderMap,
+    user: Option<Extension<UserOut>>,
+) -> impl IntoResponse {
     match get_product_by_id(&product_id).await {
         Ok(product) => {
-            // Note: KG logging is not available here since this endpoint is not authenticated
-            // Use the manual logging endpoint /api/knowledge-graph/log-view/{product_id} for testing
-            println!(
-                "ℹ️ [KG] Product {} viewed (unauthenticated - not logged to KG)",
-                product_id
-            );
+            if let Some(Extension(user)) = user {
+                auto_log_signal(
+                    &user.uid,
+                    SignalType::ProductView,
+                    product.category.clone(),
+                    Some(product_id.clone()),
+                    None,
+                )
+                .await;
+            } 
+            else if let Some(cookie_header) = headers.get(axum::http::header::COOKIE) {
+                if let Ok(cookie_str) = cookie_header.to_str() {
+                    let mut auth_cookie = None;
+                    for cookie_part in cookie_str.split(';') {
+                        let cookie_part = cookie_part.trim();
+                        if cookie_part.starts_with("GOODSPOINT_AUTHENTICATION=") {
+                            auth_cookie = Some(cookie_part.split('=').nth(1).unwrap_or(""));
+                            break;
+                        }
+                    }
+                    
+                    if let Some(cookie_value) = auth_cookie {
+                        if let Some(database) = DB.get() {
+                            let collection: Collection<UserOut> = database.collection("users");
+                            let user_result = collection
+                                .find_one(doc! {"auth.cookie": cookie_value})
+                                .await;
+                                
+                            if let Ok(Some(user)) = user_result {
+                                auto_log_signal(
+                                    &user.uid,
+                                    SignalType::ProductView,
+                                    product.category.clone(),
+                                    Some(product_id.clone()),
+                                    None,
+                                )
+                                .await;
+                            }
+                        }
+                    }
+                }
+            }
 
             let product_json = serde_json::to_value(&product).unwrap();
             let clean_product = strip_embedding_from_product(product_json);
@@ -141,6 +188,15 @@ pub(crate) async fn get_user_product_endpoint(
 ) -> impl IntoResponse {
     match get_user_product_by_id(&user, &product_id).await {
         Ok(product) => {
+            auto_log_signal(
+                &user.uid,
+                SignalType::ProductView,
+                product.category.clone(),
+                Some(product_id.clone()),
+                None,
+            )
+            .await;
+
             let product_json = serde_json::to_value(&product).unwrap();
             let clean_product = strip_embedding_from_product(product_json);
 
@@ -446,5 +502,15 @@ pub(crate) async fn set_questions_endpoint(
         }))
         .into_response(),
         Err(err) => err.into_response(),
+    }
+}
+
+pub async fn buy_now_endpoint(
+    Extension(user): Extension<UserOut>,
+    Json(request): Json<BuyNowRequest>,
+) -> impl IntoResponse {
+    match buy_now_product(&user, request.product_id, request.quantity).await {
+        Ok(order) => Json(order).into_response(),
+        Err(error) => error.into_response(),
     }
 }

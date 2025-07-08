@@ -15,10 +15,7 @@ use crate::{
     DB,
     apex::utils::VerboseHTTPError,
     auth::schemas::UserOut,
-    search::{
-        preprocessing::preprocess_text,
-        schemas::{FILEBASE_IPFS_ENDPOINT, GROQ_AI_MODEL},
-    },
+    search::{preprocessing::preprocess_text, schemas::FILEBASE_IPFS_ENDPOINT},
 };
 
 #[derive(serde::Deserialize)]
@@ -36,7 +33,6 @@ pub async fn upload_file_to_filebase(
     file_data: Bytes,
     content_type: &str,
 ) -> Result<String, VerboseHTTPError> {
-    let ipfs_endpoint = FILEBASE_IPFS_ENDPOINT;
     let access_key = var("FILEBASE_ACCESS_KEY").expect("FILEBASE_ACCESS_KEY must be set");
 
     let file_part = Part::bytes(file_data.to_vec())
@@ -48,7 +44,7 @@ pub async fn upload_file_to_filebase(
 
     let client = reqwest::Client::new();
     let response = client
-        .post(format!("{}/api/v0/add?pin=true", ipfs_endpoint))
+        .post(format!("{}/api/v0/add?pin=true", FILEBASE_IPFS_ENDPOINT))
         .header("Authorization", format!("Bearer {}", access_key))
         .multipart(form)
         .send()
@@ -265,9 +261,11 @@ pub async fn create_product(
     let product = Product {
         product_id: Uuid::new_v4().to_string(),
         user_id: user.uid.clone(),
+        username: user.username.clone(),
         title: request.title,
         description: request.description,
         product_type: request.product_type,
+        purchase_type: request.purchase_type,
         category: request.category,
         tags: request.tags,
         quantity: request.quantity,
@@ -638,7 +636,7 @@ pub async fn generate_questions_with_groq(
         )
     })?;
 
-    let groq_model = GROQ_AI_MODEL.to_string();
+    let groq_model = "compound-beta".to_string();
 
     let product = get_user_product_by_id(user, &request.product_id).await?;
 
@@ -659,7 +657,9 @@ pub async fn generate_questions_with_groq(
         - If seller says 'Ask about delivery location and timeline' → create questions about delivery address and preferred delivery date
         - If seller says 'Find out their budget and payment method' → create questions about budget range and payment preferences
 
-        Make questions clear, specific, and actionable. Mark questions as mandatory if they are essential for completing the transaction.",
+        Make questions clear, specific, and actionable. Mark questions as mandatory if they are essential for completing the transaction.
+        
+        Important: Do not attempt to call any scripts, functions, or execute any code. Use only the provided tool to format your response.",
         request.description, product_type_str, product.title, product.description
     );
 
@@ -1266,4 +1266,58 @@ pub async fn set_product_questions(
         })?;
 
     Ok(questions)
+}
+
+pub async fn buy_now_product(
+    user: &UserOut,
+    product_id: String,
+    quantity: u32,
+) -> Result<crate::orders::schemas::OrderResponse, VerboseHTTPError> {
+    let Some(database) = DB.get() else {
+        return Err(VerboseHTTPError::Standard(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Database unavailable".to_string(),
+        ));
+    };
+
+    let collection: Collection<Product> = database.collection("products");
+
+    let product = collection
+        .find_one(doc! { "product_id": &product_id })
+        .await
+        .map_err(|_| {
+            VerboseHTTPError::Standard(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Database error".to_string(),
+            )
+        })?
+        .ok_or_else(|| {
+            VerboseHTTPError::Standard(StatusCode::NOT_FOUND, "Product not found".to_string())
+        })?;
+
+    if product.purchase_type != PurchaseType::BuyNow {
+        return Err(VerboseHTTPError::Standard(
+            StatusCode::BAD_REQUEST,
+            "Product is not available for buy now".to_string(),
+        ));
+    }
+
+    if quantity < product.quantity.min_quantity || quantity > product.quantity.max_quantity {
+        return Err(VerboseHTTPError::Standard(
+            StatusCode::BAD_REQUEST,
+            "Quantity is outside allowed range".to_string(),
+        ));
+    }
+
+    let price = product.price;
+    let total_price = price * quantity as f64;
+
+    crate::orders::delegates::create_order_internal(
+        product_id,
+        product.user_id,
+        user.uid.clone(),
+        quantity,
+        total_price,
+    )
+    .await
 }

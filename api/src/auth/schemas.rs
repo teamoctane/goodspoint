@@ -19,7 +19,7 @@ pub struct EncryptedString {
 
 impl Clone for EncryptedString {
     fn clone(&self) -> Self {
-        EncryptedString {
+        Self {
             data: self.data.clone(),
             nonce: self.nonce.clone(),
             salt: self.salt.clone(),
@@ -44,13 +44,13 @@ impl EncryptedString {
             .encrypt(nonce, text.as_bytes())
             .map_err(|e| format!("Failed to encrypt data: {}", e))?;
 
-        Ok(EncryptedString {
+        Ok(Self {
             data: STANDARD.encode(&ciphertext),
             nonce: STANDARD.encode(&nonce_bytes),
             salt: Some(salt.to_string()),
             decrypted_data: {
                 let cell = OnceLock::new();
-                cell.set(text.to_string()).ok();
+                let _ = cell.set(text.to_string());
                 cell
             },
         })
@@ -99,6 +99,7 @@ impl Deref for EncryptedString {
     }
 }
 
+#[inline]
 pub fn create_email_hash(email: &str) -> String {
     let mut hasher = Sha256::default();
     hasher.update(email.as_bytes());
@@ -124,6 +125,9 @@ pub struct UserOut {
     pub username: String,
     pub email: EncryptedString,
     pub email_hash: String,
+    pub email_verified: bool,
+    pub whatsapp_number: Option<EncryptedString>,
+    pub whatsapp_verified: bool,
     pub password: String,
     pub salt: String,
     pub auth: AuthObject,
@@ -144,10 +148,13 @@ impl UserOut {
         let encrypted_email = EncryptedString::new(&email, &salt)?;
         let email_hash = create_email_hash(&email);
 
-        Ok(UserOut {
+        Ok(Self {
             username,
             email: encrypted_email,
             email_hash,
+            email_verified: false,
+            whatsapp_number: None,
+            whatsapp_verified: false,
             password,
             salt,
             auth,
@@ -156,9 +163,9 @@ impl UserOut {
         })
     }
 
+    #[inline]
     pub fn initialize_encryption(&self) -> Result<(), Box<dyn Error>> {
-        self.email.set_salt(&self.salt)?;
-        Ok(())
+        self.email.set_salt(&self.salt)
     }
 }
 
@@ -167,4 +174,53 @@ pub struct UserQuery {
     pub username: Option<String>,
     pub email: Option<String>,
     pub uid: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ChangePasswordRequest {
+    pub old_password: String,
+    pub new_password: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ChangePasswordResponse {
+    pub success: bool,
+    pub message: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SendEmailOTPRequest {
+    pub email: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct VerifyEmailOTPRequest {
+    pub email: String,
+    pub otp: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AddWhatsAppRequest {
+    pub whatsapp_number: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SendWhatsAppOTPRequest {
+    pub whatsapp_number: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct VerifyWhatsAppOTPRequest {
+    pub whatsapp_number: String,
+    pub otp: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct OTPVerification {
+    pub identifier: String,
+    pub otp_hash: String,
+    pub created_at: u64,
+    pub expires_at: u64,
+    pub attempts: u32,
+    pub verification_type: String,
 }

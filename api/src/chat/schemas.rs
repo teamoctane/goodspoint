@@ -5,11 +5,34 @@ pub const MAX_FILE_SIZE: usize = 50 * 1024 * 1024;
 pub const DEFAULT_MESSAGE_LIMIT: u32 = 64;
 pub const MAX_MESSAGE_LIMIT: u32 = 100;
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum MessageType {
     Text,
     Attachment,
+    Query,
+    Quote,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct QueryData {
+    pub product_id: String,
+    pub quantity: u32,
+    pub answers: Vec<QueryAnswer>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct QueryAnswer {
+    pub question_id: String,
+    pub answer: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct QuoteData {
+    pub product_id: String,
+    pub custom_price: String,
+    pub quantity: u32,
+    pub is_confirmed: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -27,6 +50,7 @@ pub struct MessageEdit {
     pub content: Option<String>,
     pub attachment: Option<AttachmentData>,
     pub edited_at: u64,
+    pub username: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -37,6 +61,8 @@ pub struct Message {
     pub message_type: MessageType,
     pub content: Option<String>,
     pub attachment: Option<AttachmentData>,
+    pub query_data: Option<QueryData>,
+    pub quote_data: Option<QuoteData>,
     pub created_at: u64,
     pub updated_at: u64,
     pub edit_history: Vec<MessageEdit>,
