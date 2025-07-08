@@ -3,7 +3,7 @@ export const getSpeechRec = () => {
   return C ? new C() : null;
 };
 
-export async function whisperGroq(blob) {
+export async function whisperGroq(blob) { // Won't be using, though
   const fd = new FormData();
   fd.append('file', blob, 'audio.mp3');
   fd.append('model', 'whisper-large-v3');

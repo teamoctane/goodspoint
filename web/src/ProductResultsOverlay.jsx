@@ -31,7 +31,7 @@ function ProductCard({ data, onClose }) {
       <div className="chat-prod-info">
         <div className="chat-prod-title">{data.title}</div>
         <div className="chat-prod-meta">
-          <span className="chat-prod-price">₹{data.price}</span>
+          <span className="chat-prod-price">₹{data.price || 0}</span>
           <span className="chat-prod-cond">{data.conditionDesc}</span>
         </div>
         <div className="chat-prod-desc">{data.description}</div>
@@ -40,10 +40,10 @@ function ProductCard({ data, onClose }) {
             className="pill outline action" 
             onClick={e => { 
               e.stopPropagation(); 
-              alert(`${buyNowText} ₹${data.price}`); 
+              alert(`${buyNowText} ₹${data.price || 0}`); 
             }}
           >
-            {buyNowText} ₹{data.price}
+            {buyNowText} ₹{data.price || 0}
           </button>
           <button className="pill outline action" onClick={handleInquireClick}>
             {inquireText}

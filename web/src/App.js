@@ -14,6 +14,7 @@ import ImageSearchOverlay from './ImageSearchOverlay';
 import ProductResultsOverlay from './ProductResultsOverlay';
 import Chat from './Chat';
 import LoadingIndicator from './LoadingIndicator';
+import api from './api';
 
 /* ───────────────── dummy catalogue & mini-API ───────────────── */
 // const getDummyData = (lang) => {
@@ -43,205 +44,6 @@ import LoadingIndicator from './LoadingIndicator';
 //   }));
 // };
 
-// Helper function to transform API product data to our expected format
-const transformProduct = (apiProduct) => {
-  if (!apiProduct) return null;
-  
-  return {
-    productId: apiProduct.product_id,
-    title: apiProduct.title,
-    price: 0, // Price not provided in API, defaulting to 0
-    conditionDesc: apiProduct.product_type === 'new' ? 'Brand-new in factory packaging' : 'Used - excellent condition',
-    maxQty: apiProduct.quantity?.max_quantity || 1,
-    thumbnail: apiProduct.thumbnail_url,
-    description: apiProduct.description,
-    gallery: apiProduct.gallery?.map(item => item.url) || [],
-    category: apiProduct.category,
-    tags: apiProduct.tags || []
-  };
-};
-
-const api = {
-  // Helper function to refresh authentication token
-  refreshAuth: async () => {
-    try {
-      console.log('Attempting to refresh authentication...');
-      const response = await fetch('/auth/login', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        credentials: 'include',
-        body: JSON.stringify({
-          username: 'testuser',
-          password: 'TestPass123!'
-        })
-      });
-      
-      if (response.ok) {
-        // Clear any old token since we're using cookie-based auth
-        localStorage.removeItem('GOODSPOINT_AUTHENTICATION');
-        console.log('Authentication refreshed successfully');
-        return true;
-      } else {
-        console.error('Failed to refresh authentication');
-        return false;
-      }
-    } catch (error) {
-      console.error('Error refreshing authentication:', error);
-      return false;
-    }
-  },
-
-  // Helper function to get authentication headers
-  getAuthHeaders: () => {
-    return {
-      'Content-Type': 'application/json',
-      // Using credentials: 'include' instead of manual cookies
-    };
-  },
-  
-  search: async ({ limit, cursor, lang }) => { // eslint-disable-line no-unused-vars
-    try {
-      // For now, just fetch all products since there's only one
-      // Later you can add pagination and search parameters
-      // Note: limit, cursor, lang parameters will be used when API supports them
-      const response = await fetch('/products/f613abcd-36e7-44f0-9df6-db6660e5df75', {
-        headers: api.getAuthHeaders(),
-        credentials: 'include'
-      });
-      
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-      
-      const response_data = await response.json();
-      const product = response_data.product; // Extract product from wrapper
-      const transformedProduct = transformProduct(product);
-      
-      return {
-        products: transformedProduct ? [transformedProduct] : [],
-        cursor: null, // No pagination for single product
-      };
-    } catch (error) {
-      console.error('Error fetching products:', error);
-      return {
-        products: [],
-        cursor: null,
-      };
-    }
-  },
-  
-  get: async (id, lang) => { // eslint-disable-line no-unused-vars
-    try {
-      // Note: lang parameter will be used when API supports localization
-      const response = await fetch(`/products/${id}`, {
-        headers: api.getAuthHeaders(),
-        credentials: 'include'
-      });
-      
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-      
-      const response_data = await response.json();
-      const product = response_data.product; // Extract product from wrapper
-      return transformProduct(product);
-    } catch (error) {
-      console.error('Error fetching product:', error);
-      return null;
-    }
-  },
-
-  create: async (formData) => {
-    const makeRequest = async () => {
-      console.log('Creating product...');
-      
-      return await fetch('/seller/products/create', {
-        method: 'POST',
-        credentials: 'include', // Important for cookie-based auth
-        body: formData
-      });
-    };
-
-    try {
-      let response = await makeRequest();
-      console.log('Response status:', response.status);
-      
-      // If we get 401, try to refresh auth and retry once
-      if (response.status === 401) {
-        console.log('Got 401, attempting to refresh authentication...');
-        const refreshed = await api.refreshAuth();
-        if (refreshed) {
-          console.log('Auth refreshed, retrying request...');
-          response = await makeRequest();
-          console.log('Retry response status:', response.status);
-        }
-      }
-      
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error('Error response:', errorText);
-        let errorData;
-        try {
-          errorData = JSON.parse(errorText);
-        } catch {
-          errorData = { message: errorText };
-        }
-        throw new Error(errorData.message || `HTTP error! status: ${response.status}`);
-      }
-      
-      const responseData = await response.json();
-      console.log('Success response:', responseData);
-      return responseData;
-    } catch (error) {
-      console.error('Error creating product:', error);
-      throw error;
-    }
-  },
-
-  // Get current user information
-  getCurrentUser: async () => {
-    try {
-      const response = await fetch('/auth/user', {
-        credentials: 'include'
-      });
-      
-      if (response.ok) {
-        const data = await response.json();
-        return data.user;
-      } else {
-        console.error('Failed to get current user:', response.status);
-        return null;
-      }
-    } catch (error) {
-      console.error('Error getting current user:', error);
-      return null;
-    }
-  },
-
-  // Logout user
-  logout: async () => {
-    try {
-      const response = await fetch('/auth/logout', {
-        method: 'POST',
-        credentials: 'include'
-      });
-      
-      if (response.ok) {
-        localStorage.removeItem('logged');
-        localStorage.removeItem('GOODSPOINT_AUTHENTICATION');
-        return true;
-      } else {
-        console.error('Failed to logout:', response.status);
-        return false;
-      }
-    } catch (error) {
-      console.error('Error during logout:', error);
-      return false;
-    }
-  },
-};
 
 /* ───────── NAVBAR ───────── (unchanged) */
 function Navbar({ onSearchOpen, onImageSearchOpen }) {
@@ -415,10 +217,12 @@ function Navbar({ onSearchOpen, onImageSearchOpen }) {
           </button>
         )}
 
-        <button className="pill outline chat" onClick={()=>navigate('/chat')}>
-          <span className="material-symbols-outlined">chat_bubble</span>
-          <span className="txt">{T('chat')}</span>
-        </button>
+        {logged && (
+          <button className="pill outline chat" onClick={()=>navigate('/chat')}>
+            <span className="material-symbols-outlined">chat_bubble</span>
+            <span className="txt">{T('chat')}</span>
+          </button>
+        )}
 
         {/* NEW language pill */}
         <button
@@ -432,10 +236,14 @@ function Navbar({ onSearchOpen, onImageSearchOpen }) {
 
       <aside ref={drawerRef} className={drawer ? 'drawer open' : 'drawer'}>
         <button className="drawer-link" onClick={() => navigate('/')}>{T('home')}</button>
-        <button className="drawer-link" onClick={() => navigate('/chat')}>{T('chat')}</button>
-        <button className="drawer-link" onClick={() => navigate('/dashboard')}>{T('dashboard')}</button>
-        <button className="drawer-link" onClick={() => navigate('/settings')}>{T('settings')}</button>
-        <button className="drawer-link" onClick={() => navigate('/sell')}>{T('sell')}</button>
+        {logged && (
+          <>
+            <button className="drawer-link" onClick={() => navigate('/chat')}>{T('chat')}</button>
+            <button className="drawer-link" onClick={() => navigate('/dashboard')}>{T('dashboard')}</button>
+            <button className="drawer-link" onClick={() => navigate('/settings')}>{T('settings')}</button>
+            <button className="drawer-link" onClick={() => navigate('/sell')}>{T('sell')}</button>
+          </>
+        )}
         <button className="drawer-link" onClick={() => navigate('/about')}>{T('about')}</button>
       </aside>
     </>
@@ -454,6 +262,12 @@ function Auth({ mode }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [passwordFocused, setPasswordFocused] = useState(false);
+  
+  // Email verification states
+  const [showEmailVerification, setShowEmailVerification] = useState(false);
+  const [verificationCode, setVerificationCode] = useState('');
+  const [verifyingEmail, setVerifyingEmail] = useState(false);
+  const [resendingCode, setResendingCode] = useState(false);
 
   const submit = async (e) => {
     e.preventDefault();
@@ -505,38 +319,17 @@ function Auth({ mode }) {
         const data = await response.json();
         console.log(`${mode} successful:`, data);
         
-        // For signup, automatically log the user in to set the authentication cookie
         if (mode === 'signup') {
-          console.log('Registration successful, now logging in automatically...');
-          try {
-            const loginResponse = await fetch('/auth/login', {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json'
-              },
-              credentials: 'include',
-              body: JSON.stringify({
-                username: username.trim(),
-                password: pw
-              })
-            });
-            
-            if (loginResponse.ok) {
-              console.log('Auto-login after registration successful');
-            } else {
-              console.error('Auto-login after registration failed');
-            }
-          } catch (loginError) {
-            console.error('Error during auto-login after registration:', loginError);
-          }
+          // Show email verification form instead of auto-login
+          setShowEmailVerification(true);
+          setLoading(false);
+          return;
+        } else {
+          // For login, complete normally
+          localStorage.setItem('logged', 'true');
+          window.dispatchEvent(new StorageEvent('storage', { key: 'logged', newValue: 'true' }));
+          navigate('/dashboard');
         }
-        
-        // Set logged state
-        localStorage.setItem('logged', 'true');
-        window.dispatchEvent(new StorageEvent('storage', { key: 'logged', newValue: 'true' }));
-        
-        // Navigate to dashboard
-        navigate('/dashboard');
       } else {
         const errorData = await response.json();
         setError(errorData.error || `${mode} failed`);
@@ -548,6 +341,192 @@ function Auth({ mode }) {
       setLoading(false);
     }
   };
+
+  const verifyEmail = async (e) => {
+    e.preventDefault();
+    if (!verificationCode.trim()) {
+      setError('Please enter the verification code');
+      return;
+    }
+
+    setVerifyingEmail(true);
+    setError('');
+
+    try {
+      const response = await fetch('/auth/verify-email-otp', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        credentials: 'include',
+        body: JSON.stringify({
+          email: email.trim(),
+          otp: verificationCode.trim()
+        })
+      });
+
+      if (response.ok) {
+        // Now log the user in after successful verification
+        try {
+          const loginResponse = await fetch('/auth/login', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json'
+            },
+            credentials: 'include',
+            body: JSON.stringify({
+              username: username.trim(),
+              password: pw
+            })
+          });
+          
+          if (loginResponse.ok) {
+            localStorage.setItem('logged', 'true');
+            window.dispatchEvent(new StorageEvent('storage', { key: 'logged', newValue: 'true' }));
+            navigate('/dashboard');
+          } else {
+            setError('Email verified but login failed. Please login manually.');
+          }
+        } catch {
+          setError('Email verified but login failed. Please login manually.');
+        }
+      } else {
+        const errorData = await response.json();
+        setError(errorData.message || 'Invalid verification code');
+      }
+    } catch (error) {
+      console.error('Email verification error:', error);
+      setError('Network error. Please try again.');
+    } finally {
+      setVerifyingEmail(false);
+    }
+  };
+
+  const resendVerificationCode = async () => {
+    setResendingCode(true);
+    setError('');
+
+    try {
+      const response = await fetch('/auth/send-email-otp', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        credentials: 'include',
+        body: JSON.stringify({
+          email: email.trim()
+        })
+      });
+
+      if (response.ok) {
+        setError(''); // Clear any existing errors
+        // You might want to show a success message here
+      } else {
+        const errorData = await response.json();
+        setError(errorData.message || 'Failed to resend verification code');
+      }
+    } catch (error) {
+      console.error('Resend code error:', error);
+      setError('Network error. Please try again.');
+    } finally {
+      setResendingCode(false);
+    }
+  };
+
+  // Show email verification form
+  if (showEmailVerification) {
+    return (
+      <div className="auth-wrap">
+        <div className="auth-card">
+          <h2>{T('verify_email_address')}</h2>
+          
+          <p style={{ 
+            color: 'var(--dark-grey)', 
+            fontSize: '0.9rem', 
+            textAlign: 'center', 
+            marginBottom: '1.5rem' 
+          }}>
+            {T('otp_sent_to_email')} <strong>{email}</strong>
+          </p>
+
+          {error && (
+            <div style={{ 
+              color: '#c33', 
+              background: '#fee', 
+              padding: '0.5rem', 
+              borderRadius: '0.5rem',
+              border: '1px solid #fcc',
+              fontSize: '0.9rem',
+              marginBottom: '1rem'
+            }}>
+              {error}
+            </div>
+          )}
+
+          <form onSubmit={verifyEmail}>
+            <input 
+              type="text" 
+              placeholder={T('enter_verification_code')}
+              value={verificationCode} 
+              onChange={e => setVerificationCode(e.target.value)}
+              maxLength={6}
+              style={{ 
+                textAlign: 'center', 
+                fontSize: '1.2rem', 
+                letterSpacing: '0.2rem' 
+              }}
+              required
+              autoFocus
+            />
+
+            <button className="btn" type="submit" disabled={verifyingEmail}>
+              {verifyingEmail ? T('verifying_email') : T('verify')}
+            </button>
+          </form>
+
+          <div style={{ textAlign: 'center', marginTop: '1rem' }}>
+            <span style={{ fontSize: '0.9rem', color: 'var(--dark-grey)' }}>
+              Didn&apos;t receive the code?{' '}
+            </span>
+            <button 
+              type="button"
+              className="link"
+              onClick={resendVerificationCode}
+              disabled={resendingCode}
+              style={{ 
+                background: 'none', 
+                border: 'none', 
+                padding: 0,
+                fontSize: '0.9rem'
+              }}
+            >
+              {resendingCode ? T('resending_code') : T('resend_code')}
+            </button>
+          </div>
+
+          <div style={{ textAlign: 'center', marginTop: '1rem' }}>
+            <button 
+              type="button"
+              className="link"
+              onClick={() => {
+                setShowEmailVerification(false);
+                setVerificationCode('');
+                setError('');
+              }}
+              style={{ 
+                background: 'none', 
+                border: 'none', 
+                padding: 0,
+                fontSize: '0.9rem'
+              }}
+            >
+              Back to signup
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="auth-wrap">
@@ -709,7 +688,7 @@ function ProductPage() {
     const fetchProduct = async () => {
       setLoading(true);
       try {
-        const product = await api.get(id, lang);
+        const product = await api.getProduct(id);
         setProd(product);
         setIdx(0);
         setPause(false);
@@ -896,26 +875,30 @@ const Dashboard=()=> {
     const fetchData = async () => {
       setLoading(true);
       try {
-        // Fetch current user
-        const userData = await api.getCurrentUser();
+        // First try to get current user - if this fails, we need to login
+        let userData;
+        try {
+          userData = await api.getCurrentUser();
+        } catch (loginError) {
+          console.log('Not authenticated, attempting login...', loginError.message);
+        }
+        
         setUser(userData);
 
-        // For now, use the same API call as search to get product recommendations
-        // In a real app, this would be a dedicated recommendations endpoint
-        const result = await api.search({ limit: 2, cursor: null, lang });
-        // Duplicate the single product to simulate multiple recommendations
-        const singleProduct = result.products[0];
-        if (singleProduct) {
-          const mockRecommendations = Array.from({ length: 2 }, (_, i) => ({
-            ...singleProduct,
-            productId: `${singleProduct.productId}-rec-${i}`,
-            title: `${singleProduct.title} ${i + 1}`,
-            price: Math.floor(Math.random() * 50000) + 5000, // Random price between 5k-55k
-          }));
-          setRecommendations(mockRecommendations);
+        // Fetch recommendations using the dedicated API endpoint
+        console.log('Fetching recommendations...');
+        const recommendationsData = await api.getRecommendations();
+        console.log('Recommendations response:', recommendationsData);
+        
+        if (recommendationsData && recommendationsData.rows) {
+          setRecommendations(recommendationsData.rows);
+        } else {
+          console.log('No recommendations returned from API');
+          setRecommendations([]);
         }
       } catch (error) {
         console.error('Failed to fetch data:', error);
+        setRecommendations([]);
       } finally {
         setLoading(false);
       }
@@ -951,6 +934,17 @@ const Dashboard=()=> {
             </button>
             <button 
               className="pill outline action"
+              onClick={() => navigate('/search')}
+              style={{ 
+                color: 'var(--teal)', 
+                borderColor: 'var(--teal)',
+                fontWeight: '500'
+              }}
+            >
+              🔍 Search Products
+            </button>
+            <button 
+              className="pill outline action"
               onClick={() => navigate('/chat')}
               style={{ 
                 color: 'var(--teal)', 
@@ -958,18 +952,7 @@ const Dashboard=()=> {
                 fontWeight: '500'
               }}
             >
-              View Messages
-            </button>
-            <button 
-              className="pill outline action"
-              onClick={() => navigate('/settings')}
-              style={{ 
-                color: 'var(--teal)', 
-                borderColor: 'var(--teal)',
-                fontWeight: '500'
-              }}
-            >
-              Account Settings
+              💬 View Messages
             </button>
           </div>
         </div>
@@ -979,69 +962,122 @@ const Dashboard=()=> {
           <h2 style={{ fontSize: '1.5rem', fontWeight: '600', marginBottom: '1rem' }}>Recommended for You</h2>
           
           {loading ? (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', width: '100%', maxWidth: '44rem', margin: '0 auto' }}>
-              {Array.from({ length: 2 }).map((_, i) => (
-                <div key={i} className="product chat-product skeleton">
-                  <div className="chat-prod-img skeleton-bg" />
-                  <div className="chat-prod-info">
-                    <div className="chat-prod-title skeleton-bg" style={{ width: '60%', height: 24, marginBottom: 8 }} />
-                    <div className="chat-prod-meta">
-                      <span className="chat-prod-price skeleton-bg" style={{ width: 80, height: 18 }} />
-                      <span className="chat-prod-cond skeleton-bg" style={{ width: 120, height: 18 }} />
-                    </div>
-                    <div className="chat-prod-desc skeleton-bg" style={{ width: '100%', height: 32, margin: '8px 0' }} />
-                    <div className="chat-prod-actions">
-                      <span className="pill outline action skeleton-bg" style={{ width: 120, height: 32 }} />
-                      <span className="pill outline action skeleton-bg" style={{ width: 100, height: 32, marginLeft: 8 }} />
-                    </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '2rem', width: '100%' }}>
+              {Array.from({ length: 2 }).map((_, rowIndex) => (
+                <div key={rowIndex}>
+                  <div className="skeleton-bg" style={{ width: '200px', height: '24px', marginBottom: '1rem' }} />
+                  <div style={{ 
+                    display: 'grid', 
+                    gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', 
+                    gap: '1rem',
+                    maxWidth: '100%'
+                  }}>
+                    {Array.from({ length: 6 }).map((_, i) => (
+                      <div key={i} className="product-card skeleton" style={{ minHeight: '240px' }}>
+                        <div className="skeleton-bg" style={{ width: '100%', height: '120px', marginBottom: '0.5rem' }} />
+                        <div className="skeleton-bg" style={{ width: '80%', height: '16px', marginBottom: '0.5rem' }} />
+                        <div className="skeleton-bg" style={{ width: '60%', height: '16px' }} />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : recommendations.length > 0 ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '2rem', width: '100%' }}>
+              {recommendations.map((row, rowIndex) => (
+                <div key={rowIndex}>
+                  <h3 style={{ 
+                    fontSize: '1.2rem', 
+                    fontWeight: '500', 
+                    marginBottom: '1rem',
+                    color: 'var(--teal)'
+                  }}>
+                    {row.title}
+                  </h3>
+                  <div style={{ 
+                    display: 'grid', 
+                    gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', 
+                    gap: '1rem',
+                    maxWidth: '100%'
+                  }}>
+                    {row.products.slice(0, 6).map((product) => (
+                      <div 
+                        key={product.product_id} 
+                        className="product-card" 
+                        onClick={() => navigate(`/product/${product.product_id}`)}
+                        style={{ 
+                          cursor: 'pointer',
+                          border: '1px solid var(--light-grey)',
+                          borderRadius: '8px',
+                          padding: '1rem',
+                          backgroundColor: 'white',
+                          transition: 'transform 0.2s, box-shadow 0.2s',
+                          minHeight: '240px',
+                          display: 'flex',
+                          flexDirection: 'column'
+                        }}
+                        onMouseEnter={(e) => {
+                          e.target.style.transform = 'translateY(-2px)';
+                          e.target.style.boxShadow = '0 4px 12px rgba(0,0,0,0.1)';
+                        }}
+                        onMouseLeave={(e) => {
+                          e.target.style.transform = 'translateY(0)';
+                          e.target.style.boxShadow = 'none';
+                        }}
+                      >
+                        {product.thumbnail_url && (
+                          <div 
+                            style={{ 
+                              width: '100%', 
+                              height: '120px', 
+                              backgroundImage: `url(${product.thumbnail_url})`,
+                              backgroundSize: 'cover',
+                              backgroundPosition: 'center',
+                              borderRadius: '4px',
+                              marginBottom: '0.5rem'
+                            }} 
+                          />
+                        )}
+                        <div style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+                          <h4 style={{ 
+                            fontSize: '0.9rem', 
+                            fontWeight: '500', 
+                            marginBottom: '0.5rem',
+                            lineHeight: '1.3',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            display: '-webkit-box',
+                            WebkitLineClamp: 2,
+                            WebkitBoxOrient: 'vertical'
+                          }}>
+                            {product.title}
+                          </h4>
+                          {product.price_in_inr && (
+                            <p style={{ 
+                              fontSize: '0.9rem', 
+                              fontWeight: '600', 
+                              color: 'var(--teal)',
+                              marginBottom: '0.5rem'
+                            }}>
+                              ₹{product.price_in_inr.toLocaleString()}
+                            </p>
+                          )}
+                          <p style={{ 
+                            fontSize: '0.8rem', 
+                            color: 'var(--dark-grey)',
+                            marginTop: 'auto'
+                          }}>
+                            {product.category}
+                          </p>
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 </div>
               ))}
             </div>
           ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', width: '100%', maxWidth: '44rem', margin: '0 auto' }}>
-              {recommendations.map((product) => (
-                <div 
-                  key={product.productId} 
-                  className="product chat-product" 
-                  onClick={() => navigate(`/product/${product.productId}`)}
-                  style={{ cursor: 'pointer' }}
-                >
-                  <div className="chat-prod-img" style={{ backgroundImage: `url(${product.thumbnail})` }} />
-                  <div className="chat-prod-info">
-                    <div className="chat-prod-title">{product.title}</div>
-                    <div className="chat-prod-meta">
-                      <span className="chat-prod-price">₹{product.price}</span>
-                      <span className="chat-prod-cond">{product.conditionDesc}</span>
-                    </div>
-                    <div className="chat-prod-desc">{product.description}</div>
-                    <div className="chat-prod-actions">
-                      <button 
-                        className="pill outline action" 
-                        onClick={(e) => { 
-                          e.stopPropagation(); 
-                          alert(`${T('bought_for')} ₹${product.price}`);
-                        }}
-                      >
-                        {T('buy_now')} ₹{product.price}
-                      </button>
-                      <button 
-                        className="pill outline action" 
-                        onClick={(e) => { 
-                          e.stopPropagation(); 
-                          navigate(`/product/${product.productId}`, { state: { openInquiry: true } });
-                        }}
-                      >
-                        {T('inquire')}
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-          
-          {!loading && recommendations.length === 0 && (
             <div style={{ textAlign: 'center', padding: '2rem', color: 'var(--dark-grey)' }}>
               <p>No recommendations available at the moment.</p>
             </div>
@@ -1070,13 +1106,13 @@ const Sell = () => {
   // Category options that match the ProductCategory enum
   const categoryOptions = [
     'Smartphones', 'Computers', 'Audio', 'Cameras', 'Gaming', 'Wearables', 'HomeElectronics',
-    'MensClothing', 'WomensClothing', 'Shoes', 'Accessories', 'Jewelry', 'Bags', 'Beauty',
+    'MensClothing', 'WomensClothing', 'UnisexClothing', 'Shoes', 'Accessories', 'Jewelry', 'Bags', 'Beauty',
     'Furniture', 'HomeDecor', 'Kitchen', 'Garden', 'HomeTools', 'HomeImprovement',
     'FitnessEquipment', 'OutdoorGear', 'SportsEquipment', 'Bicycles', 'WaterSports', 'WinterSports',
     'CarParts', 'Motorcycles', 'AutoTools', 'CarAccessories', 'Books', 'Music', 'Movies', 'VideoGames',
     'HealthEquipment', 'PersonalCare', 'Supplements', 'MedicalDevices', 'BabyClothing', 'Toys',
     'BabyGear', 'KidsElectronics', 'Collectibles', 'Antiques', 'Art', 'Crafts', 'OfficeSupplies',
-    'IndustrialEquipment', 'BusinessEquipment', 'Other'
+    'IndustrialEquipment', 'BusinessEquipment'
   ];
 
   const handleInputChange = (e) => {
@@ -1153,7 +1189,7 @@ const Sell = () => {
       submitFormData.append('product', JSON.stringify(productData));
 
       // Submit to API
-      const result = await api.create(submitFormData);
+      const result = await api.createProduct(submitFormData);
       
       setMessage({ text: T('product_created_successfully'), type: 'success' });
       
@@ -1444,23 +1480,6 @@ const Settings=()=> {
     }
   };
   
-  const handleDeleteAccount = async () => {
-    if (window.confirm(T('delete_account_confirm'))) {
-      // Since there's no delete account endpoint, we'll just log out and clear local data
-      try {
-        await api.logout();
-        localStorage.clear();
-        alert(T('account_deleted'));
-        navigate('/');
-      } catch (error) {
-        console.error('Delete account error:', error);
-        // Even if logout fails, clear local data
-        localStorage.clear();
-        alert(T('account_deleted'));
-        navigate('/');
-      }
-    }
-  };
 
   if (loading) {
     return (

@@ -3,123 +3,132 @@ import { useNavigate } from 'react-router-dom';
 import { T, useLang, LANGS } from './i18n';
 import './App.css';
 
-const STORAGE_CHATS = 'chat-conversations';
-const STORAGE_ACTIVE = 'active-chat-id';
-
-// Mock chat data
-const getMockChats = (lang) => {
-  const isHindi = lang === LANGS.HI;
-  
-  return [
-    {
-      id: 'chat_1',
-      contactName: isHindi ? 'राज पटेल - विक्रेता' : 'Raj Patel - Seller',
-      productTitle: isHindi ? 'औद्योगिक विजेट मॉडल 1' : 'Industrial Widget Model 1',
-      lastMessage: isHindi ? 'धन्यवाद आपकी रुचि के लिए!' : 'Thank you for your interest!',
-      timestamp: Date.now() - 3600000, // 1 hour ago
-      unread: 2,
-      messages: [
-        {
-          id: 1,
-          role: 'seller',
-          text: isHindi ? 'नमस्ते! आपकी पूछताछ मिली। क्या आप इस उत्पाद के बारे में और जानना चाहते हैं?' : 'Hello! I received your inquiry. Would you like to know more about this product?',
-          timestamp: Date.now() - 7200000
-        },
-        {
-          id: 2,
-          role: 'buyer',
-          text: isHindi ? 'हाँ, मुझे डिलीवरी के समय के बारे में जानना है।' : 'Yes, I need to know about delivery time.',
-          timestamp: Date.now() - 3900000
-        },
-        {
-          id: 3,
-          role: 'seller',
-          text: isHindi ? 'डिलीवरी आमतौर पर 3-5 व्यावसायिक दिनों में होती है।' : 'Delivery usually takes 3-5 business days.',
-          timestamp: Date.now() - 3600000
+// API functions for chat
+const chatAPI = {
+  // Get all conversations
+  getConversations: async () => {
+    try {
+      const response = await fetch('/chat/conversations', {
+        credentials: 'include',
+        headers: {
+          'Content-Type': 'application/json'
         }
-      ]
-    },
-    {
-      id: 'chat_2',
-      contactName: isHindi ? 'प्रिया शर्मा - विक्रेता' : 'Priya Sharma - Seller',
-      productTitle: isHindi ? 'औद्योगिक विजेट मॉडल 5' : 'Industrial Widget Model 5',
-      lastMessage: isHindi ? 'आपका आर्डर तैयार है।' : 'Your order is ready.',
-      timestamp: Date.now() - 86400000, // 1 day ago
-      unread: 0,
-      messages: [
-        {
-          id: 1,
-          role: 'seller',
-          text: isHindi ? 'आपकी पूछताछ के लिए धन्यवाद!' : 'Thank you for your inquiry!',
-          timestamp: Date.now() - 172800000
-        },
-        {
-          id: 2,
-          role: 'buyer',
-          text: isHindi ? 'क्या यह अभी भी उपलब्ध है?' : 'Is this still available?',
-          timestamp: Date.now() - 90000000
-        },
-        {
-          id: 3,
-          role: 'seller',
-          text: isHindi ? 'हाँ, आपका आर्डर तैयार है।' : 'Yes, your order is ready.',
-          timestamp: Date.now() - 86400000
-        }
-      ]
+      });
+      
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      
+      const data = await response.json();
+      return data.conversations || [];
+    } catch (error) {
+      console.error('Error fetching conversations:', error);
+      return [];
     }
-  ];
+  },
+
+  // Get messages for a specific conversation
+  getMessages: async (otherUserId) => {
+    try {
+      const response = await fetch(`/chat/${otherUserId}/messages`, {
+        credentials: 'include',
+        headers: {
+          'Content-Type': 'application/json'
+        }
+      });
+      
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      
+      const data = await response.json();
+      return data.messages || [];
+    } catch (error) {
+      console.error('Error fetching messages:', error);
+      return [];
+    }
+  },
+
+  // Send a message using FormData (as expected by the backend)
+  sendMessage: async (otherUserId, messageText) => {
+    try {
+      const formData = new FormData();
+      formData.append('content', messageText);
+
+      const response = await fetch(`/chat/${otherUserId}/messages`, {
+        method: 'POST',
+        credentials: 'include',
+        body: formData
+      });
+      
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      
+      const data = await response.json();
+      return data;
+    } catch (error) {
+      console.error('Error sending message:', error);
+      throw error;
+    }
+  }
 };
 
-function ChatList({ chats, activeChat, onChatSelect, lang }) {
-  const formatTime = (timestamp) => {
-    const now = Date.now();
-    const diff = now - timestamp;
-    const minutes = Math.floor(diff / 60000);
-    const hours = Math.floor(diff / 3600000);
-    const days = Math.floor(diff / 86400000);
-    
-    if (minutes < 60) return `${minutes}m`;
-    if (hours < 24) return `${hours}h`;
-    return `${days}d`;
-  };
+// Helper function to format timestamp
+const formatTime = (timestamp) => {
+  const date = new Date(timestamp * 1000); // Backend uses seconds since epoch
+  const now = new Date();
+  const diffMs = now - date;
+  const diffMins = Math.floor(diffMs / 60000);
+  const diffHours = Math.floor(diffMs / 3600000);
+  const diffDays = Math.floor(diffMs / 86400000);
 
+  if (diffMins < 1) return 'Just now';
+  if (diffMins < 60) return `${diffMins}m ago`;
+  if (diffHours < 24) return `${diffHours}h ago`;
+  if (diffDays < 7) return `${diffDays}d ago`;
+  
+  return date.toLocaleDateString();
+};
+
+function ChatList({ conversations, activeConversation, onConversationSelect, lang }) {
   return (
     <div className="chat-list">
       <div className="chat-list-header">
-        <h2>{'Messages'}</h2>
+        <h2>{T('messages')}</h2>
       </div>
       <div className="chat-list-items">
-        {chats.map(chat => (
+        {conversations.map(conv => (
           <div 
-            key={chat.id}
-            className={`chat-list-item ${activeChat?.id === chat.id ? 'active' : ''}`}
-            onClick={() => onChatSelect(chat)}
+            key={conv.conversation_id}
+            className={`chat-list-item ${activeConversation?.conversation_id === conv.conversation_id ? 'active' : ''}`}
+            onClick={() => onConversationSelect(conv)}
           >
             <div className="chat-avatar">
               <span className="material-symbols-outlined">person</span>
             </div>
             <div className="chat-info">
               <div className="chat-header">
-                <span className="chat-name">{chat.contactName}</span>
-                <span className="chat-time">{formatTime(chat.timestamp)}</span>
+                <span className="chat-name">
+                  {lang === LANGS.HI ? 'उपयोगकर्ता' : 'User'} {conv.other_participant_id}
+                </span>
+                <span className="chat-time">{formatTime(conv.last_message_at)}</span>
               </div>
               <div className="chat-preview">
-                <span className="chat-product">{chat.productTitle}</span>
-              </div>
-              <div className="chat-last-message">
-                {chat.lastMessage}
+                <span className="chat-product">
+                  {lang === LANGS.HI ? 'बातचीत' : 'Conversation'}
+                </span>
               </div>
             </div>
-            {chat.unread > 0 && (
-              <div className="chat-unread">{chat.unread}</div>
-            )}
           </div>
         ))}
-        {chats.length === 0 && (
+        {conversations.length === 0 && (
           <div className="no-chats">
             <span className="material-symbols-outlined">chat_bubble_outline</span>
-            <p>{'No messages yet'}</p>
-            <p className="help-text">{'Start an inquiry to begin chatting with sellers'}</p>
+            <p>{T('no_messages_yet')}</p>
+            <p className="help-text">
+              {T('start_inquiry_to_chat')}
+            </p>
           </div>
         )}
       </div>
@@ -127,15 +136,16 @@ function ChatList({ chats, activeChat, onChatSelect, lang }) {
   );
 }
 
-function ChatWindow({ chat, onSendMessage, lang }) {
+function ChatWindow({ conversation, messages, onSendMessage, lang, currentUserId, isLoading }) {
   const [message, setMessage] = useState('');
   const [isListening, setIsListening] = useState(false);
+  const [sendingMessage, setSendingMessage] = useState(false);
   const messagesEndRef = useRef(null);
   const recognitionRef = useRef(null);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [chat?.messages]);
+  }, [messages]);
 
   useEffect(() => {
     // Initialize speech recognition
@@ -174,10 +184,18 @@ function ChatWindow({ chat, onSendMessage, lang }) {
     };
   }, [lang]);
 
-  const handleSend = () => {
-    if (!message.trim()) return;
-    onSendMessage(message.trim());
-    setMessage('');
+  const handleSend = async () => {
+    if (!message.trim() || sendingMessage || !conversation) return;
+    
+    setSendingMessage(true);
+    try {
+      await onSendMessage(conversation.other_participant_id, message.trim());
+      setMessage('');
+    } catch (error) {
+      console.error('Failed to send message:', error);
+    } finally {
+      setSendingMessage(false);
+    }
   };
 
   const handleKeyPress = (e) => {
@@ -189,7 +207,7 @@ function ChatWindow({ chat, onSendMessage, lang }) {
 
   const handleVoiceClick = () => {
     if (!recognitionRef.current) {
-      alert('Speech recognition is not supported in your browser');
+      alert(lang === LANGS.HI ? 'आपके ब्राउज़र में वॉयस रिकॉग्निशन समर्थित नहीं है' : 'Speech recognition is not supported in your browser');
       return;
     }
 
@@ -201,15 +219,15 @@ function ChatWindow({ chat, onSendMessage, lang }) {
   };
 
   const formatMessageTime = (timestamp) => {
-    return new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    return new Date(timestamp * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   };
 
-  if (!chat) {
+  if (!conversation) {
     return (
       <div className="chat-placeholder">
         <span className="material-symbols-outlined">chat_bubble_outline</span>
-        <h3>{'Select a conversation'}</h3>
-        <p>{'Choose a conversation from the list to start messaging'}</p>
+        <h3>{T('select_conversation')}</h3>
+        <p>{T('choose_conversation_to_start')}</p>
       </div>
     );
   }
@@ -222,8 +240,10 @@ function ChatWindow({ chat, onSendMessage, lang }) {
             <span className="material-symbols-outlined">person</span>
           </div>
           <div className="chat-contact-info">
-            <h3>{chat.contactName}</h3>
-            <p>{chat.productTitle}</p>
+            <h3>
+              {lang === LANGS.HI ? 'उपयोगकर्ता' : 'User'} {conversation.other_participant_id}
+            </h3>
+            <p>{lang === LANGS.HI ? 'बातचीत' : 'Conversation'}</p>
           </div>
         </div>
         <div className="chat-actions">
@@ -237,13 +257,19 @@ function ChatWindow({ chat, onSendMessage, lang }) {
       </div>
       
       <div className="chat-messages">
-        {chat.messages.map(msg => (
-          <div key={msg.id} className={`message ${msg.role === 'buyer' ? 'own' : 'other'}`}>
+        {isLoading && (
+          <div className="message-loading">
+            {T('loading_messages')}
+          </div>
+        )}
+        {messages.map(msg => (
+          <div key={msg.message_id} className={`message ${msg.sender_id === currentUserId ? 'own' : 'other'}`}>
             <div className="message-content">
-              {msg.text}
+              {msg.content}
             </div>
             <div className="message-time">
-              {formatMessageTime(msg.timestamp)}
+              {formatMessageTime(msg.created_at)}
+              {msg.is_edited && <span className="edited-indicator"> ({T('edited')})</span>}
             </div>
           </div>
         ))}
@@ -256,14 +282,19 @@ function ChatWindow({ chat, onSendMessage, lang }) {
             value={message}
             onChange={(e) => setMessage(e.target.value)}
             onKeyPress={handleKeyPress}
-            placeholder={'Type a message...'}
+            placeholder={lang === LANGS.HI ? 'एक संदेश टाइप करें...' : 'Type a message...'}
             rows={1}
             className="chat-input"
+            disabled={sendingMessage}
           />
           <button 
             className={`chat-voice-btn ${isListening ? 'listening' : ''}`}
             onClick={handleVoiceClick}
-            title={isListening ? 'Stop listening' : 'Start voice input'}
+            title={isListening ? 
+              (lang === LANGS.HI ? 'सुनना बंद करें' : 'Stop listening') : 
+              (lang === LANGS.HI ? 'वॉयस इनपुट शुरू करें' : 'Start voice input')
+            }
+            disabled={sendingMessage}
           >
             <span className="material-symbols-outlined">
               {isListening ? 'stop' : 'mic'}
@@ -272,9 +303,11 @@ function ChatWindow({ chat, onSendMessage, lang }) {
           <button 
             className="chat-send-btn"
             onClick={handleSend}
-            disabled={!message.trim()}
+            disabled={!message.trim() || sendingMessage}
           >
-            <span className="material-symbols-outlined">send</span>
+            <span className="material-symbols-outlined">
+              {sendingMessage ? 'hourglass_empty' : 'send'}
+            </span>
           </button>
         </div>
       </div>
@@ -285,24 +318,115 @@ function ChatWindow({ chat, onSendMessage, lang }) {
 export default function Chat() {
   const navigate = useNavigate();
   const { lang } = useLang();
-  const [chats, setChats] = useState(() => {
-    const saved = localStorage.getItem(STORAGE_CHATS);
-    if (saved) {
-      try {
-        return JSON.parse(saved);
-      } catch {
-        return getMockChats(lang);
-      }
-    }
-    return getMockChats(lang);
-  });
-  
-  const [activeChat, setActiveChat] = useState(() => {
-    const activeChatId = localStorage.getItem(STORAGE_ACTIVE);
-    return chats.find(chat => chat.id === activeChatId) || null;
-  });
+  const [conversations, setConversations] = useState([]);
+  const [activeConversation, setActiveConversation] = useState(null);
+  const [messages, setMessages] = useState([]);
+  const [currentUserId, setCurrentUserId] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [messagesLoading, setMessagesLoading] = useState(false);
 
-  // Check for new inquiry messages on mount
+  // Load conversations on component mount
+  useEffect(() => {
+    loadConversations();
+    loadCurrentUser();
+  }, []);
+
+  // Load messages when active conversation changes
+  useEffect(() => {
+    if (activeConversation) {
+      loadMessages(activeConversation.other_participant_id);
+    } else {
+      setMessages([]);
+    }
+  }, [activeConversation]);
+
+  // Check for auth status and redirect if needed
+  useEffect(() => {
+    const checkAuth = async () => {
+      try {
+        const response = await fetch('/auth/user', {
+          credentials: 'include'
+        });
+        if (!response.ok) {
+          navigate('/');
+          return;
+        }
+        const userData = await response.json();
+        setCurrentUserId(userData.user.uid);
+      } catch (error) {
+        console.error('Auth check failed:', error);
+        navigate('/');
+      }
+    };
+    checkAuth();
+  }, [navigate]);
+
+  const loadCurrentUser = async () => {
+    try {
+      const response = await fetch('/auth/user', {
+        credentials: 'include'
+      });
+      if (response.ok) {
+        const userData = await response.json();
+        setCurrentUserId(userData.user.uid);
+      }
+    } catch (error) {
+      console.error('Failed to get current user:', error);
+    }
+  };
+
+  const loadConversations = async () => {
+    setLoading(true);
+    try {
+      const convs = await chatAPI.getConversations();
+      setConversations(convs);
+    } catch (error) {
+      console.error('Failed to load conversations:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const loadMessages = async (otherUserId) => {
+    setMessagesLoading(true);
+    try {
+      const msgs = await chatAPI.getMessages(otherUserId);
+      setMessages(msgs);
+    } catch (error) {
+      console.error('Failed to load messages:', error);
+      setMessages([]);
+    } finally {
+      setMessagesLoading(false);
+    }
+  };
+
+  const handleConversationSelect = (conversation) => {
+    setActiveConversation(conversation);
+  };
+
+  const handleSendMessage = async (otherUserId, messageText) => {
+    try {
+      const response = await chatAPI.sendMessage(otherUserId, messageText);
+      
+      if (response.status === 'ok') {
+        // Add the new message to the current messages
+        const newMessage = response.message;
+        setMessages(prev => [...prev, newMessage]);
+        
+        // Update conversations list to reflect the new message
+        setConversations(prev => prev.map(conv => 
+          conv.other_participant_id === otherUserId 
+            ? { ...conv, last_message_at: newMessage.created_at }
+            : conv
+        ));
+      }
+    } catch (error) {
+      console.error('Failed to send message:', error);
+      throw error;
+    }
+  };
+
+  // Handle inquiry messages from other parts of the app
   useEffect(() => {
     const inquiryData = sessionStorage.getItem('pending-inquiry-message');
     if (inquiryData) {
@@ -316,155 +440,63 @@ export default function Chat() {
     }
   }, []);
 
-  useEffect(() => {
-    localStorage.setItem(STORAGE_CHATS, JSON.stringify(chats));
-  }, [chats]);
-
-  useEffect(() => {
-    if (activeChat) {
-      localStorage.setItem(STORAGE_ACTIVE, activeChat.id);
-    }
-  }, [activeChat]);
-
-  const handleInquiryMessage = (inquiry) => {
-    const { productId, productTitle, questions, answers } = inquiry;
+  const handleInquiryMessage = async (inquiry) => {
+    const { productTitle, questions, answers, sellerId } = inquiry;
     
+    if (!sellerId) {
+      console.error('No seller ID provided in inquiry');
+      return;
+    }
+
     // Format the inquiry message
     const isHindi = lang === LANGS.HI;
     const inquiryText = isHindi 
       ? `नई पूछताछ: ${productTitle}\n\nप्रश्न और उत्तर:\n${questions.map((q, i) => `${i + 1}. ${q.question}\n   उत्तर: ${answers[i] || 'N/A'}`).join('\n\n')}`
       : `New Inquiry: ${productTitle}\n\nQuestions & Answers:\n${questions.map((q, i) => `${i + 1}. ${q.question}\n   Answer: ${answers[i] || 'N/A'}`).join('\n\n')}`;
     
-    // Create or find existing chat
-    const chatId = `inquiry_${productId}_${Date.now()}`;
-    const contactName = isHindi ? 'नई पूछताछ - विक्रेता' : 'New Inquiry - Seller';
-    
-    const newMessage = {
-      id: Date.now(),
-      role: 'buyer',
-      text: inquiryText,
-      timestamp: Date.now()
-    };
-
-    const existingChatIndex = chats.findIndex(chat => 
-      chat.productTitle === productTitle
-    );
-
-    if (existingChatIndex !== -1) {
-      // Add to existing chat
-      const updatedChats = [...chats];
-      updatedChats[existingChatIndex].messages.push(newMessage);
-      updatedChats[existingChatIndex].lastMessage = isHindi ? 'नई पूछताछ भेजी गई' : 'New inquiry sent';
-      updatedChats[existingChatIndex].timestamp = Date.now();
-      setChats(updatedChats);
-      setActiveChat(updatedChats[existingChatIndex]);
-    } else {
-      // Create new chat
-      const newChat = {
-        id: chatId,
-        contactName,
-        productTitle,
-        lastMessage: isHindi ? 'नई पूछताछ भेजी गई' : 'New inquiry sent',
-        timestamp: Date.now(),
-        unread: 0,
-        messages: [newMessage]
-      };
+    try {
+      // Send the inquiry message
+      await handleSendMessage(sellerId, inquiryText);
       
-      const updatedChats = [newChat, ...chats];
-      setChats(updatedChats);
-      setActiveChat(newChat);
-    }
-  };
-
-  const handleChatSelect = (chat) => {
-    setActiveChat(chat);
-    // Mark as read
-    if (chat.unread > 0) {
-      const updatedChats = chats.map(c => 
-        c.id === chat.id ? { ...c, unread: 0 } : c
-      );
-      setChats(updatedChats);
-    }
-  };
-
-  const handleSendMessage = (messageText) => {
-    if (!activeChat) return;
-
-    const newMessage = {
-      id: Date.now(),
-      role: 'buyer',
-      text: messageText,
-      timestamp: Date.now()
-    };
-
-    const updatedChats = chats.map(chat => {
-      if (chat.id === activeChat.id) {
-        return {
-          ...chat,
-          messages: [...chat.messages, newMessage],
-          lastMessage: messageText,
-          timestamp: Date.now()
-        };
+      // Reload conversations to ensure the new conversation appears
+      await loadConversations();
+      
+      // Find and select the conversation with this seller
+      const conversation = conversations.find(conv => conv.other_participant_id === sellerId);
+      if (conversation) {
+        setActiveConversation(conversation);
       }
-      return chat;
-    });
-
-    setChats(updatedChats);
-    setActiveChat(prev => ({
-      ...prev,
-      messages: [...prev.messages, newMessage],
-      lastMessage: messageText,
-      timestamp: Date.now()
-    }));
-
-    // Simulate seller response (for demo)
-    setTimeout(() => {
-      const sellerResponse = {
-        id: Date.now() + 1,
-        role: 'seller',
-        text: lang === LANGS.HI 
-          ? 'आपके संदेश के लिए धन्यवाद! मैं जल्द ही उत्तर दूंगा।'
-          : 'Thank you for your message! I will respond shortly.',
-        timestamp: Date.now()
-      };
-
-      setChats(prev => prev.map(chat => {
-        if (chat.id === activeChat.id) {
-          return {
-            ...chat,
-            messages: [...chat.messages, sellerResponse],
-            lastMessage: sellerResponse.text,
-            timestamp: Date.now(),
-            unread: 1
-          };
-        }
-        return chat;
-      }));
-
-      setActiveChat(prev => ({
-        ...prev,
-        messages: [...prev.messages, sellerResponse],
-        lastMessage: sellerResponse.text,
-        timestamp: Date.now()
-      }));
-    }, 2000);
+    } catch (error) {
+      console.error('Failed to send inquiry message:', error);
+    }
   };
+
+  if (loading) {
+    return (
+      <div className="chat-page">
+        <div className="chat-loading">
+          {T('loading')}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="chat-page">
       <div className="chat-container">
         <ChatList 
-          chats={chats}
-          activeChat={activeChat}
-          onChatSelect={handleChatSelect}
+          conversations={conversations}
+          activeConversation={activeConversation}
+          onConversationSelect={handleConversationSelect}
           lang={lang}
-          navigate={navigate}
         />
         <ChatWindow 
-          chat={activeChat}
+          conversation={activeConversation}
+          messages={messages}
           onSendMessage={handleSendMessage}
           lang={lang}
-          navigate={navigate}
+          currentUserId={currentUserId}
+          isLoading={messagesLoading}
         />
       </div>
     </div>

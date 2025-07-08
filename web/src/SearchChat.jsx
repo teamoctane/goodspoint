@@ -76,11 +76,18 @@ function ProductCard({ data, onClose, ...rest }) {
   
   // Get translated text during render, not in event handlers
   const inquireText = T('inquire');
+  const buyNowText = T('buy_now');
+  const boughtForText = T('bought_for');
   
   const handleProductClick = () => {
     // Close the search overlay before navigating
     if (onClose) onClose();
     navigate(`/product/${data.productId}`);
+  };
+  
+  const handleBuyClick = (e) => {
+    e.stopPropagation();
+    alert(`${boughtForText} ₹${data.price || 0}`);
   };
   
   const handleInquireClick = (e) => {
@@ -97,13 +104,14 @@ function ProductCard({ data, onClose, ...rest }) {
       <div className="chat-prod-info">
         <div className="chat-prod-title">{data.title}</div>
         <div className="chat-prod-meta">
-          {data.price && data.price !== '0' && data.price !== 0 && (
-            <span className="chat-prod-price">₹{data.price}</span>
-          )}
+          <span className="chat-prod-price">₹{data.price || 0}</span>
           <span className="chat-prod-cond">{data.conditionDesc}</span>
         </div>
         <div className="chat-prod-desc">{data.description}</div>
         <div className="chat-prod-actions">
+          <button className="pill outline action" onClick={handleBuyClick}>
+            {buyNowText} ₹{data.price || 0}
+          </button>
           <button className="pill outline action" onClick={handleInquireClick}>
             {inquireText}
           </button>

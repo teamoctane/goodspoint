@@ -137,9 +137,28 @@ export default function ImageSearchOverlay({ isOpen, onClose, onProductsFound })
     setError('');
 
     try {
-      // For now, use the same API as regular search since there's no image search endpoint yet
-      // In the future, this would be replaced with an actual image search API
-      const response = await fetch('/products/f613abcd-36e7-44f0-9df6-db6660e5df75', {
+      // Create FormData for multipart upload
+      const formData = new FormData();
+      
+      // Add search parameters as JSON body
+      const searchRequest = {
+        query: null, // No text query for pure image search
+        limit: 10,
+        force_original: false
+      };
+      formData.append('body', JSON.stringify(searchRequest));
+      
+      // Add each selected image
+      selectedImages.forEach((imageData) => {
+        formData.append('images', imageData.file, imageData.name);
+      });
+      
+      console.log('Sending image search request with', selectedImages.length, 'images');
+      
+      // Send to the real image search endpoint
+      const response = await fetch('/products/search', {
+        method: 'POST',
+        body: formData,
         credentials: 'include'
       });
       
@@ -147,35 +166,37 @@ export default function ImageSearchOverlay({ isOpen, onClose, onProductsFound })
         throw new Error(`HTTP error! status: ${response.status}`);
       }
       
-      const response_data = await response.json();
-      const product = response_data.product;
+      const responseData = await response.json();
+      console.log('Image search response:', responseData);
       
-      if (product) {
-        const transformedProduct = {
-          productId: product.product_id,
-          title: product.title,
-          price: 0,
-          conditionDesc: product.product_type === 'new' ? 'Brand-new in factory packaging' : 'Used - excellent condition',
-          maxQty: product.quantity?.max_quantity || 1,
-          thumbnail: product.thumbnail_url,
-          description: product.description,
-          gallery: product.gallery?.map(item => item.url) || [],
-          category: product.category,
-          tags: product.tags || []
-        };
+      // Transform products to expected format
+      const transformedProducts = responseData.results?.map(apiProduct => {
+        if (!apiProduct) return null;
         
-        // Return the real product data
-        onProductsFound([transformedProduct]);
-      } else {
-        onProductsFound([]);
-      }
+        return {
+          productId: apiProduct.product_id,
+          title: apiProduct.title,
+          price: apiProduct.price || '0',
+          conditionDesc: apiProduct.product_type === 'new' ? 'Brand-new in factory packaging' : 'Used - excellent condition',
+          maxQty: apiProduct.quantity?.max_quantity || 1,
+          thumbnail: apiProduct.thumbnail_url,
+          description: apiProduct.description,
+          gallery: apiProduct.gallery?.map(item => item.url) || [],
+          category: apiProduct.category,
+          tags: apiProduct.tags || [],
+          username: apiProduct.username || 'Unknown seller'
+        };
+      }).filter(Boolean) || [];
+      
+      // Return the search results
+      onProductsFound(transformedProducts);
       
       // Close the image search overlay
       handleClose();
       
     } catch (error) {
       console.error('Image search error:', error);
-      setError('Search failed. Please try again.');
+      setError('Image search failed. Please try again.');
     } finally {
       setIsSearching(false);
     }
@@ -200,12 +221,12 @@ export default function ImageSearchOverlay({ isOpen, onClose, onProductsFound })
       <div className="search-overlay-content">
         <div className="image-search-container">
           <button className="back-btn" onClick={handleClose}>
-            {'Back'}
+            {T('back')}
           </button>
           
           <div className="image-search-header">
-            <h2>{'Upload Image'}</h2>
-            <p>{'Maximum 2 images, 5MB each'}</p>
+            <h2>{T('upload_images')}</h2>
+            <p>{T('max_2_images')}</p>
           </div>
 
           {error && (
@@ -222,8 +243,8 @@ export default function ImageSearchOverlay({ isOpen, onClose, onProductsFound })
           >
             <div className="drop-zone-content">
               <span className="material-symbols-outlined">cloud_upload</span>
-              <p>{'Drag and drop images here or click to select'}</p>
-              <p className="file-limits">{'Maximum 2 images, 5MB each'}</p>
+              <p>{T('drag_drop_images')}</p>
+              <p className="file-limits">{T('max_2_images')}</p>
               <input
                 type="file"
                 accept="image/*"
@@ -236,7 +257,7 @@ export default function ImageSearchOverlay({ isOpen, onClose, onProductsFound })
 
           {selectedImages.length > 0 && (
             <div className="selected-images">
-              <h3>{'Selected Images'} ({selectedImages.length}/2)</h3>
+              <h3>{T('selected_images')} ({selectedImages.length}/2)</h3>
               <div className="image-preview-grid">
                 {selectedImages.map((img, index) => (
                   <div key={index} className="image-preview">
@@ -262,7 +283,7 @@ export default function ImageSearchOverlay({ isOpen, onClose, onProductsFound })
                     className="btn secondary"
                     onClick={() => fileInputRef.current?.click()}
                   >
-                    {'Add More Images'} ({2 - selectedImages.length} {'remaining'})
+                    {T('add_more_images')} ({2 - selectedImages.length} {T('remaining')})
                   </button>
                   <input
                     ref={fileInputRef}
@@ -283,14 +304,14 @@ export default function ImageSearchOverlay({ isOpen, onClose, onProductsFound })
               onClick={handleClose}
               disabled={isSearching}
             >
-              {'Cancel'}
+              {T('cancel')}
             </button>
             <button 
               className="btn primary" 
               onClick={handleSearch}
               disabled={selectedImages.length === 0 || isSearching}
             >
-              {isSearching ? 'Searching...' : 'Search Products'}
+              {isSearching ? T('searching') : T('search_products')}
             </button>
           </div>
         </div>

@@ -25,7 +25,7 @@ export function TextInputBar({ onSend, value, setValue, inputRef }){
         <input 
           ref={inputRef}
           className="input"
-          placeholder={'Describe what you want…'}
+          placeholder={T('describe_what_you_want')}
           value={value}
           onChange={e=>setValue(e.target.value)}
           onKeyDown={handleKeyDown}
