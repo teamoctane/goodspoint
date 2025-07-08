@@ -1,0 +1,51 @@
+# macOS system files
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+.Spotlight-V100
+.Trashes
+*.swp
+
+# Rust build artifacts
+target/
+**/*.rs.bk
+Cargo.lock
+
+# Node.js, React, Yarn, NPM
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+dist/
+build/
+.cache/
+public/build/
+.vite/
+
+# React Router (static hosting fallback)
+404.html
+
+# Environment files
+.env
+.env.*.local
+.env.local
+
+# VS Code settings
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+
+# Logs
+logs
+*.log
+*.log.*
+
+# Lock files (uncomment depending on which tool you use)
+package-lock.json
+pnpm-lock.yaml
+
+.vscode
+.github/instructions
